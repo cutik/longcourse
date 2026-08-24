@@ -1,0 +1,32 @@
+name: Longcourse
+version: "0.1.0"
+slug: longcourse
+description: Apple Health ingest + MCP server for swim coaching
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+boot: auto
+# Host port 8787. The iPhone reaches this over Tailscale; nothing is
+# published to the internet.
+ports:
+  "8000/tcp": 8787
+ports_description:
+  "8000/tcp": Ingest endpoint (/ingest) and MCP endpoint (/mcp)
+map:
+  - share:rw          # drop historical Quick Export files here for backfill
+options:
+  db_host: ""
+  db_port: 5432
+  db_user: longcourse
+  db_password: ""
+  db_name: longcourse
+  ingest_token: ""
+schema:
+  db_host: str
+  db_port: port
+  db_user: str
+  db_password: password
+  db_name: str
+  ingest_token: password
