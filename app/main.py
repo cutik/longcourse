@@ -378,11 +378,37 @@ async def css_inputs() -> dict:
 mcp_app = mcp.http_app(path="/mcp")
 
 
+SCHEMA = Path(__file__).with_name("schema.sql")
+
+
+async def apply_schema() -> None:
+    """Run schema.sql on every boot.
+
+    Every statement is CREATE ... IF NOT EXISTS, so this is idempotent and
+    removes the need for a psql client on the host. It does NOT create the
+    database or the role — those need superuser rights and are a one-time
+    manual step.
+
+    A missing file is fatal on purpose. Skipping it quietly produces a server
+    that starts cleanly and then 500s on the first query, which is a far worse
+    failure to debug than refusing to boot.
+    """
+    if not SCHEMA.exists():
+        raise RuntimeError(
+            f"{SCHEMA} missing — the image did not COPY db/schema.sql. "
+            "Check the Dockerfile."
+        )
+    async with pool.connection() as conn:
+        await conn.execute(SCHEMA.read_text())
+    print(f"schema applied from {SCHEMA}", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool
     pool = AsyncConnectionPool(DSN, min_size=1, max_size=4, open=False)
     await pool.open()
+    await apply_schema()
     async with mcp_app.lifespan(app):
         yield
     await pool.close()
