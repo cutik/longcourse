@@ -1,4 +1,3 @@
-ARG BUILD_FROM=python:3.12-slim
 FROM ${BUILD_FROM}
 
 RUN pip install --no-cache-dir \
