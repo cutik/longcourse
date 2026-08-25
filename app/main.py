@@ -6,10 +6,12 @@ Routes:
   GET  /health   freshness probe for the Home Assistant watchdog sensor
   ANY  /mcp      MCP over HTTP for Claude Code / claude.ai
 
-Two invariants worth keeping:
+Invariants:
   1. The raw body is archived before anything is parsed. If the parser is wrong
-     (and it will be, at least once), we replay instead of losing data.
+     (and it has been), we replay instead of losing data.
   2. Every write is an upsert. HAE resends overlapping windows on every run.
+  3. Nothing is classified by a user-visible string. Workout names and
+     locations come back in the phone's language.
 """
 
 from __future__ import annotations
@@ -29,8 +31,6 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 # ------------------------------------------------------------------ options --
-# Supervisor writes add-on options here. Fall back to env vars so the same
-# image can be run under plain docker for local testing.
 OPTS: dict[str, Any] = {}
 _opts_file = Path("/data/options.json")
 if _opts_file.exists():
@@ -46,13 +46,13 @@ DSN = (
     f"@{opt('db_host')}:{opt('db_port', 5432)}/{opt('db_name')}"
 )
 TOKEN = opt("ingest_token")
+SCHEMA = Path(__file__).with_name("schema.sql")
 
 pool: AsyncConnectionPool | None = None
 
 
 # ----------------------------------------------------------------- parsing --
 
-# HAE emits "2024-02-06 07:00:00 -0800" and occasionally ISO-8601.
 _HAE_DT = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s*([+-]\d{4})?$")
 
 
@@ -70,7 +70,6 @@ def parse_dt(v: Any) -> datetime | None:
 
 
 def qty(obj: Any) -> float | None:
-    """HAE wraps most numbers as {"qty": x, "units": "..."} but not always."""
     if isinstance(obj, dict):
         v = obj.get("qty")
         return float(v) if isinstance(v, (int, float)) else None
@@ -81,92 +80,159 @@ def units(obj: Any) -> str | None:
     return obj.get("units") if isinstance(obj, dict) else None
 
 
-def to_meters(q_: float | None, u: str | None) -> float | None:
-    """Normalize to metres at the edge. Never store mixed units."""
-    if q_ is None:
+_DIST = {"m": 1.0, "km": 1000.0, "mi": 1609.344, "yd": 0.9144, "ft": 0.3048}
+
+
+def to_meters(obj: Any) -> float | None:
+    q, u = qty(obj), (units(obj) or "m").lower()
+    return None if q is None else q * _DIST.get(u, 1.0)
+
+
+def pool_length_m(obj: Any) -> float | None:
+    """Repair HAE's lapLength unit bug.
+
+    A 50m pool exports as {"units":"m","qty":0.05} — the number is kilometres
+    but the label says metres. No real pool is under a metre, so a sub-1 value
+    tagged as metres is unambiguously the km case.
+    """
+    q = qty(obj)
+    if q is None or q <= 0:
         return None
-    f = {"m": 1.0, "km": 1000.0, "mi": 1609.344, "yd": 0.9144, "ft": 0.3048}
-    return q_ * f.get((u or "m").lower(), 1.0)
+    u = (units(obj) or "m").lower()
+    if u == "m" and q < 1:
+        q *= 1000.0
+    elif u != "m":
+        q *= _DIST.get(u, 1.0)
+    return q if 5 <= q <= 100 else None
 
 
-def dig(d: dict, *path: str) -> Any:
-    """Tolerant lookup: v2 nests, v1 flattens. Try both."""
-    cur: Any = d
-    for k in path:
-        if not isinstance(cur, dict):
-            return None
-        cur = cur.get(k)
-    if cur is None and path:
-        cur = d.get(path[-1])
-    return cur
+def kcal(obj: Any) -> float | None:
+    """HAE reports workout energy in kJ despite the field names."""
+    q, u = qty(obj), (units(obj) or "").lower()
+    if q is None:
+        return None
+    return q / 4.184 if u == "kj" else q
 
 
-# Candidate keys for per-length data. HAE v2 documents lapLength/strokeStyle at
-# the workout level; whether it also ships an array of lengths is the open
-# question this pipeline is built to answer either way.
-LENGTH_KEYS = ("lengths", "laps", "splits", "swimLengths", "intervals")
+# Structural swim signals — present regardless of interface language.
+SWIM_KEYS = ("swimDistance", "swimStroke", "swimCadence",
+             "totalSwimmingStrokeCount", "lapLength")
 
 
-def extract_lengths(w: dict) -> list[dict]:
-    for key in LENGTH_KEYS:
-        arr = w.get(key)
-        if isinstance(arr, list) and arr and isinstance(arr[0], dict):
-            return arr
-    return []
+def classify(w: dict) -> str:
+    """Derive sport without touching the localised name.
+
+    HAE returns name and location in the phone's language ("Басейн Плавання"),
+    so any ILIKE '%swim%' filter silently returns nothing for non-English
+    users. Structure is stable; strings are not.
+    """
+    if any(k in w for k in SWIM_KEYS):
+        return "swim"
+    if "stepCount" in w or "flightsClimbed" in w:
+        return "walk"
+    if "runningPower" in w or "runningSpeed" in w or "groundContactTime" in w:
+        return "run"
+    return "other"
+
+
+# Time-series keys we lift into workout_samples.
+SERIES_KEYS = ("swimStroke", "swimDistance", "heartRateData", "activeEnergy",
+               "basalEnergy", "heartRateRecovery", "stepCount", "speed")
+
+
+def moving_seconds(series: list[dict], min_qty: float = 5.0) -> float | None:
+    """Active time, estimated from per-bucket swim distance.
+
+    Buckets carrying almost no distance are rests between sets. Excluding them
+    is what makes SWOLF comparable between a steady swim and an interval
+    session — gross duration would punish the interval session for resting.
+    Bucket width is inferred from the gaps rather than assumed to be 60s.
+    """
+    pts = sorted(
+        [(parse_dt(p.get("date")), qty(p)) for p in series if parse_dt(p.get("date"))],
+        key=lambda x: x[0],
+    )
+    if len(pts) < 2:
+        return None
+    gaps = [(pts[i + 1][0] - pts[i][0]).total_seconds() for i in range(len(pts) - 1)]
+    width = sorted(gaps)[len(gaps) // 2]
+    if width <= 0:
+        return None
+    return sum(width for _, q in pts if (q or 0) >= min_qty)
 
 
 def workout_row(w: dict) -> tuple | None:
     wid = w.get("id") or w.get("uuid")
-    start = parse_dt(w.get("start") or w.get("startDate"))
+    start = parse_dt(w.get("start"))
     if not wid or not start:
         return None
 
-    dist = w.get("distance")
-    swim = w.get("swimmingMetrics") if isinstance(w.get("swimmingMetrics"), dict) else w
-    lap = swim.get("lapLength") if isinstance(swim, dict) else None
-    g = swim.get if isinstance(swim, dict) else (lambda *_: None)
+    sport = classify(w)
+    duration_s = qty(w.get("duration"))
+    distance_m = to_meters(w.get("distance"))
+    lap = pool_length_m(w.get("lapLength"))
+    strokes = qty(w.get("totalSwimmingStrokeCount"))
+
+    hr = w.get("heartRate") if isinstance(w.get("heartRate"), dict) else {}
+    hrr_series = w.get("heartRateRecovery") or []
+    hrr = None
+    if isinstance(hrr_series, list) and hrr_series:
+        first = hrr_series[0]
+        hrr = first.get("Avg") if isinstance(first, dict) else None
+
+    # Derived swim figures. Computed here rather than in queries so every
+    # consumer sees the same numbers and the same rest-handling.
+    lengths = moving_s = swolf = swolf_gross = pace = None
+    if sport == "swim" and lap and distance_m and distance_m > 0:
+        lengths = max(1, round(distance_m / lap))
+        moving_s = moving_seconds(w.get("swimDistance") or []) or duration_s
+        if strokes:
+            spl = strokes / lengths
+            if moving_s:
+                swolf = moving_s / lengths + spl
+            if duration_s:
+                swolf_gross = duration_s / lengths + spl
+        if moving_s:
+            pace = moving_s / (distance_m / 100.0)
 
     return (
-        str(wid),
-        w.get("name") or w.get("workoutActivityType") or "Unknown",
-        start,
-        parse_dt(w.get("end") or w.get("endDate")),
-        qty(w.get("duration")),
-        to_meters(qty(dist), units(dist)),
-        qty(dig(w, "activeEnergyBurned")),
-        qty(dig(w, "heartRateData", "average")) or qty(w.get("avgHeartRate")),
-        qty(dig(w, "heartRateData", "max")) or qty(w.get("maxHeartRate")),
-        to_meters(qty(lap), units(lap)),
-        g("strokeStyle"),
-        qty(g("swolfScore")),
-        qty(g("totalSwimmingStrokeCount")),
-        qty(g("swimCadence")),
-        g("salinity"),
+        str(wid), sport, w.get("isIndoor"), w.get("name"), w.get("location"),
+        start, parse_dt(w.get("end")), duration_s, distance_m,
+        kcal(w.get("activeEnergyBurned")), kcal(w.get("totalEnergy")),
+        qty(w.get("avgHeartRate")) or qty(hr.get("avg")),
+        qty(hr.get("min")), qty(w.get("maxHeartRate")) or qty(hr.get("max")),
+        hrr, lap, strokes, qty(w.get("swimCadence")),
+        lengths, moving_s, swolf, swolf_gross, pace,
         json.dumps(w),
     )
 
 
-def length_rows(wid: str, arr: list[dict]) -> list[tuple]:
+def sample_rows(wid: str, w: dict) -> list[tuple]:
     rows = []
-    for i, l in enumerate(arr):
-        d = l.get("distance")
-        rows.append((
-            wid, i,
-            parse_dt(l.get("start") or l.get("date")),
-            qty(l.get("duration")),
-            to_meters(qty(d), units(d)),
-            l.get("strokeStyle"),
-            qty(l.get("strokeCount") or l.get("totalSwimmingStrokeCount")),
-            qty(l.get("swolfScore") or l.get("swolf")),
-            qty(l.get("avgHeartRate") or dig(l, "heartRateData", "average")),
-            json.dumps(l),
-        ))
+    for key in SERIES_KEYS:
+        series = w.get(key)
+        if not isinstance(series, list):
+            continue
+        for p in series:
+            if not isinstance(p, dict):
+                continue
+            ts = parse_dt(p.get("date"))
+            if not ts:
+                continue
+            # HR buckets carry Min/Avg/Max instead of qty, with capitalised keys.
+            value = qty(p)
+            if value is None and "Avg" in p:
+                value = p.get("Avg")
+            extra = {k: v for k, v in p.items()
+                     if k not in {"date", "qty", "units", "source"}} or None
+            rows.append((wid, key, ts, value, p.get("units"),
+                         json.dumps(extra) if extra else None))
     return rows
 
 
 async def store(payload: dict, sha: str) -> dict:
     data = payload.get("data", payload)
-    n_m = n_w = n_l = 0
+    n_m = n_w = n_s = 0
 
     async with pool.connection() as conn:
         await conn.execute(
@@ -198,47 +264,51 @@ async def store(payload: dict, sha: str) -> dict:
             if not row:
                 continue
             await conn.execute(
-                "INSERT INTO workouts (id,name,started_at,ended_at,duration_s,"
-                " distance_m,active_kcal,avg_hr,max_hr,pool_length_m,stroke_style,"
-                " swolf,stroke_count,swim_cadence,salinity,raw)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                "INSERT INTO workouts (id,sport,is_indoor,name_raw,location_raw,"
+                " started_at,ended_at,duration_s,distance_m,active_kcal,total_kcal,"
+                " avg_hr,min_hr,max_hr,hr_recovery,pool_length_m,stroke_count,"
+                " swim_cadence,lengths,moving_s,swolf,swolf_gross,pace_s_per_100m,raw)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                "         %s,%s,%s,%s,%s,%s)"
                 " ON CONFLICT (id) DO UPDATE SET"
+                " sport=EXCLUDED.sport, is_indoor=EXCLUDED.is_indoor,"
+                " name_raw=EXCLUDED.name_raw, location_raw=EXCLUDED.location_raw,"
                 " ended_at=EXCLUDED.ended_at, duration_s=EXCLUDED.duration_s,"
                 " distance_m=EXCLUDED.distance_m, active_kcal=EXCLUDED.active_kcal,"
-                " avg_hr=EXCLUDED.avg_hr, max_hr=EXCLUDED.max_hr,"
-                " pool_length_m=EXCLUDED.pool_length_m, stroke_style=EXCLUDED.stroke_style,"
-                " swolf=EXCLUDED.swolf, stroke_count=EXCLUDED.stroke_count,"
-                " swim_cadence=EXCLUDED.swim_cadence, salinity=EXCLUDED.salinity,"
+                " total_kcal=EXCLUDED.total_kcal, avg_hr=EXCLUDED.avg_hr,"
+                " min_hr=EXCLUDED.min_hr, max_hr=EXCLUDED.max_hr,"
+                " hr_recovery=EXCLUDED.hr_recovery,"
+                " pool_length_m=EXCLUDED.pool_length_m,"
+                " stroke_count=EXCLUDED.stroke_count,"
+                " swim_cadence=EXCLUDED.swim_cadence, lengths=EXCLUDED.lengths,"
+                " moving_s=EXCLUDED.moving_s, swolf=EXCLUDED.swolf,"
+                " swolf_gross=EXCLUDED.swolf_gross,"
+                " pace_s_per_100m=EXCLUDED.pace_s_per_100m,"
                 " raw=EXCLUDED.raw, updated_at=now()",
                 row,
             )
             n_w += 1
-            for lr in length_rows(row[0], extract_lengths(w)):
+            for sr in sample_rows(row[0], w):
                 await conn.execute(
-                    "INSERT INTO swim_lengths (workout_id,idx,started_at,duration_s,"
-                    " distance_m,stroke_style,stroke_count,swolf,avg_hr,raw)"
-                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
-                    " ON CONFLICT (workout_id, idx) DO UPDATE SET"
-                    " duration_s=EXCLUDED.duration_s, distance_m=EXCLUDED.distance_m,"
-                    " stroke_style=EXCLUDED.stroke_style, stroke_count=EXCLUDED.stroke_count,"
-                    " swolf=EXCLUDED.swolf, avg_hr=EXCLUDED.avg_hr, raw=EXCLUDED.raw",
-                    lr,
+                    "INSERT INTO workout_samples (workout_id,metric,ts,qty,units,extra)"
+                    " VALUES (%s,%s,%s,%s,%s,%s)"
+                    " ON CONFLICT (workout_id,metric,ts) DO UPDATE SET"
+                    " qty=EXCLUDED.qty, units=EXCLUDED.units, extra=EXCLUDED.extra",
+                    sr,
                 )
-                n_l += 1
+                n_s += 1
 
         await conn.execute(
-            "INSERT INTO ingest_log (n_metrics,n_workouts,n_lengths) VALUES (%s,%s,%s)",
-            (n_m, n_w, n_l),
+            "INSERT INTO ingest_log (n_metrics,n_workouts,n_samples) VALUES (%s,%s,%s)",
+            (n_m, n_w, n_s),
         )
 
-    return {"metrics": n_m, "workouts": n_w, "lengths": n_l}
+    return {"metrics": n_m, "workouts": n_w, "samples": n_s}
 
 
 # --------------------------------------------------------------------- MCP --
 # Deliberately not a SQL passthrough. Each tool answers a coaching question and
-# returns a small, pre-aggregated payload. A generic query tool would let the
-# agent pull thousands of raw rows and burn the context window on data it then
-# has to re-summarise itself.
+# returns a small, pre-aggregated payload.
 
 mcp = FastMCP("longcourse")
 
@@ -273,43 +343,60 @@ async def sync_status() -> dict:
 
 
 @mcp.tool()
-async def swim_sessions(since_days: int = 28, pool_length_m: float | None = None) -> list[dict]:
+async def swim_sessions(since_days: int = 28, pool_length_m: float | None = None,
+                        indoor_only: bool = True) -> list[dict]:
     """List swim sessions with pace and efficiency, newest first.
 
-    Filter by pool_length_m before comparing SWOLF across sessions: SWOLF sums
+    SWOLF here excludes rest between sets, so interval and steady sessions are
+    directly comparable; swolf_gross includes rest and is only useful for
+    spotting how much of a session was spent standing at the wall.
+
+    Filter by pool_length_m before comparing SWOLF across sessions: it sums
     strokes and seconds per length, so a 50m course yields structurally
     different numbers than 25m even when technique is unchanged.
     """
     return _r(await q(
         """
-        SELECT id, started_at::date AS day, distance_m, duration_s, pool_length_m,
-               stroke_style, swolf, stroke_count, swim_cadence, avg_hr, max_hr,
-               CASE WHEN distance_m > 0 THEN duration_s / (distance_m/100.0) END
-                 AS pace_s_per_100m
+        SELECT id, started_at::date AS day, distance_m, duration_s, moving_s,
+               pool_length_m, lengths, stroke_count, swim_cadence,
+               swolf, swolf_gross, pace_s_per_100m, avg_hr, max_hr, hr_recovery
         FROM workouts
-        WHERE name ILIKE '%%swim%%'
+        WHERE sport = 'swim'
           AND started_at >= now() - make_interval(days => %s)
+          AND (%s::boolean IS NOT TRUE OR is_indoor IS TRUE)
           AND (%s::float8 IS NULL OR pool_length_m = %s)
         ORDER BY started_at DESC
-        """, (since_days, pool_length_m, pool_length_m)))
+        """, (since_days, indoor_only, pool_length_m, pool_length_m)))
 
 
 @mcp.tool()
-async def session_detail(workout_id: str) -> dict:
-    """Full breakdown of one swim, including per-length splits when available.
+async def session_detail(workout_id: str, bucket_minutes: int = 5) -> dict:
+    """One session's summary plus its within-session shape, bucketed over time.
 
-    If lengths comes back empty this export carries only session-level
-    aggregates. Say so plainly rather than inferring set structure.
+    Apple Watch does not export per-length splits, so this is the finest
+    structure available: per-minute stroke rate and distance, aggregated into
+    buckets. Falling distance with steady stroke rate suggests fatigue; gaps
+    with near-zero distance are rests and mark set boundaries. Do not present
+    these buckets as if they were 50m splits.
     """
     rows = await q("SELECT * FROM workouts WHERE id = %s", (workout_id,))
     if not rows:
         return {"error": "not found"}
     w = rows[0]
     w.pop("raw", None)
-    lens = await q(
-        "SELECT idx,duration_s,distance_m,stroke_style,stroke_count,swolf,avg_hr "
-        "FROM swim_lengths WHERE workout_id=%s ORDER BY idx", (workout_id,))
-    return {"session": _r([w])[0], "lengths": _r(lens), "n_lengths": len(lens)}
+    buckets = await q(
+        """
+        SELECT to_char(date_trunc('hour', ts)
+                 + make_interval(mins => (EXTRACT(minute FROM ts)::int
+                     / %s) * %s), 'HH24:MI') AS t,
+               AVG(qty) FILTER (WHERE metric = 'swimStroke')   AS stroke_rate,
+               SUM(qty) FILTER (WHERE metric = 'swimDistance') AS distance_m,
+               AVG(qty) FILTER (WHERE metric = 'heartRateData') AS hr
+        FROM workout_samples
+        WHERE workout_id = %s AND metric IN ('swimStroke','swimDistance','heartRateData')
+        GROUP BY 1 ORDER BY 1
+        """, (bucket_minutes, bucket_minutes, workout_id))
+    return {"session": _r([w])[0], "buckets": _r(buckets)}
 
 
 @mcp.tool()
@@ -340,15 +427,15 @@ async def compare_blocks(block_days: int = 14) -> dict:
     rows = await q(
         """
         WITH s AS (
-          SELECT started_at, distance_m, duration_s, swolf,
+          SELECT distance_m, moving_s, swolf,
                  CASE WHEN started_at >= now() - make_interval(days => %s)
                       THEN 'current' ELSE 'previous' END AS block
           FROM workouts
-          WHERE name ILIKE '%%swim%%'
+          WHERE sport = 'swim'
             AND started_at >= now() - make_interval(days => %s))
         SELECT block, COUNT(*) AS sessions, SUM(distance_m) AS distance_m,
-               SUM(duration_s) AS duration_s, AVG(swolf) AS avg_swolf,
-               SUM(duration_s)/NULLIF(SUM(distance_m)/100.0,0) AS pace_s_per_100m
+               SUM(moving_s) AS moving_s, AVG(swolf) AS avg_swolf,
+               SUM(moving_s)/NULLIF(SUM(distance_m)/100.0,0) AS pace_s_per_100m
         FROM s GROUP BY block
         """, (block_days, block_days * 2))
     return {r["block"]: _r([r])[0] for r in rows}
@@ -361,16 +448,19 @@ async def css_inputs() -> dict:
     CSS = (400 - 200) / (t400 - t200). Without a recent test the training zones
     are guesswork, so if the best efforts here are older than about six weeks,
     recommend re-testing before writing a plan.
+
+    These are whole sessions, not timed sets. A 400m session that was really a
+    warmup will look like a bad time trial — confirm before using the numbers.
     """
     rows = await q(
         """
-        SELECT started_at::date AS day, distance_m, duration_s
+        SELECT started_at::date AS day, distance_m, moving_s, pool_length_m
         FROM workouts
-        WHERE name ILIKE '%%swim%%' AND distance_m BETWEEN 180 AND 420
-        ORDER BY duration_s/NULLIF(distance_m,0) ASC LIMIT 10
+        WHERE sport = 'swim' AND distance_m BETWEEN 180 AND 420
+        ORDER BY moving_s/NULLIF(distance_m,0) ASC LIMIT 10
         """)
     return {"candidates": _r(rows),
-            "note": "Verify these were maximal time trials, not warmup segments."}
+            "note": "Whole sessions. Verify these were maximal time trials."}
 
 
 # --------------------------------------------------------------------- app --
@@ -378,26 +468,15 @@ async def css_inputs() -> dict:
 mcp_app = mcp.http_app(path="/mcp")
 
 
-SCHEMA = Path(__file__).with_name("schema.sql")
-
-
 async def apply_schema() -> None:
     """Run schema.sql on every boot.
 
-    Every statement is CREATE ... IF NOT EXISTS, so this is idempotent and
-    removes the need for a psql client on the host. It does NOT create the
-    database or the role — those need superuser rights and are a one-time
-    manual step.
-
-    A missing file is fatal on purpose. Skipping it quietly produces a server
-    that starts cleanly and then 500s on the first query, which is a far worse
-    failure to debug than refusing to boot.
+    Every statement is CREATE ... IF NOT EXISTS, so this is idempotent. A
+    missing file is fatal on purpose: skipping it quietly produces a server
+    that starts cleanly and then 500s on the first query.
     """
     if not SCHEMA.exists():
-        raise RuntimeError(
-            f"{SCHEMA} missing — the image did not COPY db/schema.sql. "
-            "Check the Dockerfile."
-        )
+        raise RuntimeError(f"{SCHEMA} missing — the image did not COPY db/schema.sql")
     async with pool.connection() as conn:
         await conn.execute(SCHEMA.read_text())
     print(f"schema applied from {SCHEMA}", flush=True)
