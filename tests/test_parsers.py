@@ -81,7 +81,21 @@ check("both dialects agree on HRV",
       canonical("apple", "HKQuantityTypeIdentifierHeartRateVariabilitySDNN")
       == canonical("hae", "heart_rate_variability"), True)
 check("unmapped type is skipped, not guessed",
-      canonical("apple", "HKQuantityTypeIdentifierHeadphoneAudioExposure"), None)
+      canonical("apple", "HKCategoryTypeIdentifierToothbrushingEvent"), None)
+# Category types carry a string in @value, so a numeric read yields NULL. They
+# must stay unmapped until they get a parser of their own, or the import writes
+# rows of nothing.
+check("category types stay unmapped",
+      canonical("apple", "HKCategoryTypeIdentifierAppleStandHour"), None)
+check("newly mapped: HR recovery",
+      canonical("apple", "HKQuantityTypeIdentifierHeartRateRecoveryOneMinute"),
+      "hr_recovery_1min")
+check("newly mapped: water temperature",
+      canonical("apple", "HKQuantityTypeIdentifierWaterTemperature"), "water_temperature")
+check("walking speed km/hr -> m/s",
+      to_canonical_value("walking_speed", 5.4, "km/hr")[0], 1.5, tol=0.001)
+check("walking asymmetry fraction -> percent",
+      to_canonical_value("walking_asymmetry", 0.04, "%")[0], 4.0, tol=0.001)
 check("swimming activity", apple_sport("HKWorkoutActivityTypeSwimming"), "swim")
 check("unknown activity falls back", apple_sport("HKWorkoutActivityTypeCurling"), "other")
 check("sleep stage rem", sleep_stage("HKCategoryValueSleepAnalysisAsleepREM"), "rem")

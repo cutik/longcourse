@@ -85,12 +85,19 @@ silently produce wrong or empty results.
    In HAE output there are **no per-length splits** — the finest structure is
    per-minute buckets, and they must not be presented as 50m splits.
 
-   **Caveat added later:** that conclusion came from HAE's output, which is not
-   the same thing as HealthKit's. The native `export.xml` emits
-   `<WorkoutEvent type="HKWorkoutEventTypeLap">`, and `--scan` reports whether
-   this archive actually contains them. If it does, `workout_laps` fills and
-   `swolf_method='lap'` sessions are measured rather than estimated. Unverified
-   until the first real archive is scanned — do not assume either way.
+   **Corrected 2026-08-25 — this held for HAE only.** The conclusion came from
+   HAE's output, which is not the same thing as HealthKit's. Scanning the real
+   native archive found **16,867 `HKWorkoutEventTypeLap` events across 386 of
+   441 swims**. Per-length splits do exist; HAE simply drops them.
+
+   So for those sessions lengths and active time are *counted*, and SWOLF is a
+   measurement. `swolf_method` records which path produced a figure — `lap` or
+   `estimated` — and the two must never be averaged or compared. The
+   top-quartile estimator still covers the ~55 swims with no lap events, and
+   remains the only option for anything arriving through HAE.
+
+   Still absent: `HKMetadataKeySwimmingStrokeStyle` is not present anywhere in
+   the archive (0 entries), so there is no per-stroke breakdown.
 
 5. **Energy is in kJ** despite field names implying kcal. `kcal()` converts.
 
@@ -256,8 +263,12 @@ client. Revisit if remote agent access is wanted.
 Working: ingest end-to-end (LAN and tunnel), Access policies, schema
 auto-apply, all six MCP tools.
 
-Built but **not yet run against real data or a real database** — everything
-below was developed offline, and the SQL in particular has never been executed:
+The real archive has been **scanned** (2026-08-25, 1.51 GB, 26 s on a laptop):
+2022-10-18 to 2026-08-25, 441 swims, 611 walks, 166 runs, ~2.5M mapped records,
+40,754 sleep segments, 389 workout routes. Nothing has been **imported** yet.
+
+Built but **not yet run against a real database** — the SQL has never been
+executed:
 
 - `app/importers/apple_xml.py` — streaming `export.xml` importer, `--scan` and
   `--import`. Verified against a synthetic fixture only

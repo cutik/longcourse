@@ -64,6 +64,38 @@ CANON: dict[str, tuple[str, str, str]] = {
     # swim-specific quantity streams (also land in workout_samples per workout)
     "distance_swimming":     (CUMULATIVE,    "m",           "Swimming distance"),
     "swimming_strokes":      (CUMULATIVE,    "count",       "Swimming strokes"),
+
+    # open water and diving — the archive turned out to carry these
+    "water_temperature":     (INSTANTANEOUS, "degC",        "Water temperature"),
+    "underwater_depth":      (INSTANTANEOUS, "m",           "Underwater depth"),
+
+    # heart-rate recovery is a first-class recovery signal and there is already
+    # a hr_recovery column on workouts for it
+    "hr_recovery_1min":      (INSTANTANEOUS, "bpm",         "1-min heart-rate recovery"),
+
+    # other sports
+    "distance_cycling":      (CUMULATIVE,    "m",           "Cycling distance"),
+    "running_speed":         (INSTANTANEOUS, "m/s",         "Running speed"),
+    "running_power":         (INSTANTANEOUS, "W",           "Running power"),
+    "running_stride_length": (INSTANTANEOUS, "m",           "Running stride length"),
+    "running_vertical_osc":  (INSTANTANEOUS, "cm",          "Running vertical oscillation"),
+    "running_ground_contact": (INSTANTANEOUS, "ms",         "Running ground contact time"),
+
+    # effort and exposure
+    "physical_effort":       (INSTANTANEOUS, "MET",         "Physical effort"),
+    "time_in_daylight":      (CUMULATIVE,    "min",         "Time in daylight"),
+    "audio_exposure_env":    (INSTANTANEOUS, "dBASPL",      "Environmental sound level"),
+    "audio_exposure_phones": (INSTANTANEOUS, "dBASPL",      "Headphone audio level"),
+
+    # gait / mobility
+    "walking_speed":         (INSTANTANEOUS, "m/s",         "Walking speed"),
+    "walking_step_length":   (INSTANTANEOUS, "cm",          "Walking step length"),
+    "walking_asymmetry":     (INSTANTANEOUS, "%",           "Walking asymmetry"),
+    "walking_double_support": (INSTANTANEOUS, "%",          "Double support time"),
+    "walking_steadiness":    (INSTANTANEOUS, "%",           "Walking steadiness"),
+    "stair_ascent_speed":    (INSTANTANEOUS, "m/s",         "Stair ascent speed"),
+    "stair_descent_speed":   (INSTANTANEOUS, "m/s",         "Stair descent speed"),
+    "six_minute_walk":       (INSTANTANEOUS, "m",           "Six-minute walk distance"),
 }
 
 # ------------------------------------------------------------------ aliases --
@@ -93,6 +125,27 @@ _APPLE = {
     "hkquantitytypeidentifierapplestandtime":               "stand_time",
     "hkquantitytypeidentifierdistanceswimming":             "distance_swimming",
     "hkquantitytypeidentifierswimmingstrokecount":          "swimming_strokes",
+    "hkquantitytypeidentifierwatertemperature":             "water_temperature",
+    "hkquantitytypeidentifierunderwaterdepth":              "underwater_depth",
+    "hkquantitytypeidentifierheartraterecoveryoneminute":   "hr_recovery_1min",
+    "hkquantitytypeidentifierdistancecycling":              "distance_cycling",
+    "hkquantitytypeidentifierrunningspeed":                 "running_speed",
+    "hkquantitytypeidentifierrunningpower":                 "running_power",
+    "hkquantitytypeidentifierrunningstridelength":          "running_stride_length",
+    "hkquantitytypeidentifierrunningverticaloscillation":   "running_vertical_osc",
+    "hkquantitytypeidentifierrunninggroundcontacttime":     "running_ground_contact",
+    "hkquantitytypeidentifierphysicaleffort":               "physical_effort",
+    "hkquantitytypeidentifiertimeindaylight":               "time_in_daylight",
+    "hkquantitytypeidentifierenvironmentalaudioexposure":   "audio_exposure_env",
+    "hkquantitytypeidentifierheadphoneaudioexposure":       "audio_exposure_phones",
+    "hkquantitytypeidentifierwalkingspeed":                 "walking_speed",
+    "hkquantitytypeidentifierwalkingsteplength":            "walking_step_length",
+    "hkquantitytypeidentifierwalkingasymmetrypercentage":   "walking_asymmetry",
+    "hkquantitytypeidentifierwalkingdoublesupportpercentage": "walking_double_support",
+    "hkquantitytypeidentifierapplewalkingsteadiness":       "walking_steadiness",
+    "hkquantitytypeidentifierstairascentspeed":             "stair_ascent_speed",
+    "hkquantitytypeidentifierstairdescentspeed":            "stair_descent_speed",
+    "hkquantitytypeidentifiersixminutewalktestdistance":    "six_minute_walk",
 }
 
 _HAE = {
@@ -158,6 +211,23 @@ _TO_CANON: dict[tuple[str, str], float] = {
     ("height", "in"): 0.0254,
     ("body_fat", "fraction"): 100.0,
     ("blood_oxygen", "fraction"): 100.0,
+    ("distance_cycling", "km"): 1000.0,
+    ("distance_cycling", "mi"): 1609.344,
+    ("distance_cycling", "m"): 1.0,
+    ("walking_speed", "km/hr"): 1 / 3.6,
+    ("walking_speed", "mi/hr"): 0.44704,
+    ("running_speed", "km/hr"): 1 / 3.6,
+    ("running_speed", "mi/hr"): 0.44704,
+    ("stair_ascent_speed", "ft/s"): 0.3048,
+    ("stair_descent_speed", "ft/s"): 0.3048,
+    ("walking_step_length", "m"): 100.0,
+    ("walking_step_length", "in"): 2.54,
+    ("running_stride_length", "cm"): 0.01,
+    ("running_vertical_osc", "m"): 100.0,
+    ("time_in_daylight", "s"): 1 / 60.0,
+    ("time_in_daylight", "hr"): 60.0,
+    ("six_minute_walk", "km"): 1000.0,
+    ("underwater_depth", "cm"): 0.01,
     # Fahrenheit is an offset conversion, not a multiplier — see the degf branch
     # in to_canonical_value(). It deliberately has no entry here.
 }
@@ -250,6 +320,13 @@ _APPLE_SPORTS = {
     "hkworkoutactivitytypeyoga":           "mobility",
     "hkworkoutactivitytypeflexibility":    "mobility",
     "hkworkoutactivitytypecooldown":       "mobility",
+    # The archive turned out to contain these; without entries they collapse
+    # into "other" and become invisible in a per-sport breakdown.
+    "hkworkoutactivitytypeunderwaterdiving": "dive",
+    "hkworkoutactivitytypedownhillskiing":   "ski",
+    "hkworkoutactivitytypefitnessgaming":    "cardio",
+    "hkworkoutactivitytypehockey":           "other",
+    "hkworkoutactivitytypecardiodance":      "cardio",
 }
 
 
