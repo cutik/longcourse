@@ -39,8 +39,6 @@ from collections import Counter
 from pathlib import Path
 from xml.etree.ElementTree import iterparse
 
-import psycopg
-
 from canon import (CANON, apple_sport, canonical, local_day, night_day,
                    sleep_stage, to_canonical_value)
 from db import BatchWriter, register_raw_file, upsert_metric_meta
@@ -49,6 +47,10 @@ from parse import (as_float, dist_to_meters, duration_seconds, energy_kcal,
 from settings import DSN, TZ
 
 PROVIDER = "apple"
+# Progress is printed every this many top-level elements. A full archive runs to
+# millions of records and several minutes even on a fast machine; silence for
+# that long is indistinguishable from a hang.
+PROGRESS_EVERY = 250_000
 SLEEP_TYPE = "HKCategoryTypeIdentifierSleepAnalysis"
 
 OBS_COLS = ("provider", "metric", "ts", "local_day", "value", "unit", "source")
@@ -209,7 +211,11 @@ async def scan(path: Path) -> None:
     first = last = None
     n_workouts = 0
 
+    seen = 0
     for elem in _elements(path):
+        seen += 1
+        if seen % PROGRESS_EVERY == 0:
+            print(f"  … {seen:,} elements", file=sys.stderr, flush=True)
         tag = elem.tag
         if tag == "Record":
             t = elem.get("type") or "?"
@@ -279,6 +285,9 @@ async def scan(path: Path) -> None:
 # ------------------------------------------------------------------- import --
 
 async def run_import(path: Path, dsn: str, tz: str, commit_every: int = 200_000) -> dict:
+    # Imported here, not at module scope, so `--scan` runs anywhere Python does.
+    import psycopg
+
     sha = file_sha256(path)
     size = path.stat().st_size
     print(f"{path.name}: {size / 1e6:.1f} MB, sha256 {sha[:12]}", flush=True)
@@ -309,7 +318,11 @@ async def run_import(path: Path, dsn: str, tz: str, commit_every: int = 200_000)
                            conflict=("workout_id", "idx"))
 
         since_commit = 0
+        seen = 0
         for elem in _elements(path):
+            seen += 1
+            if seen % PROGRESS_EVERY == 0:
+                print(f"  … read {seen:,} elements", flush=True)
             tag = elem.tag
 
             if tag == "Record":
