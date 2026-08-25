@@ -12,9 +12,9 @@
  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Apple Watch" value="HKCategoryValueSleepAnalysisAsleepDeep" creationDate="2026-08-20 06:00:00 +0300" startDate="2026-08-19 23:40:00 +0300" endDate="2026-08-20 00:55:00 +0300"/>
  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Apple Watch" value="HKCategoryValueSleepAnalysisAsleepREM" creationDate="2026-08-20 06:00:00 +0300" startDate="2026-08-20 01:00:00 +0300" endDate="2026-08-20 02:10:00 +0300"/>
  <Workout workoutActivityType="HKWorkoutActivityTypeSwimming" duration="47.5" durationUnit="min" totalDistance="2" totalDistanceUnit="km" totalEnergyBurned="1800" totalEnergyBurnedUnit="kJ" sourceName="Apple Watch" creationDate="2026-08-21 20:00:00 +0300" startDate="2026-08-21 19:10:00 +0300" endDate="2026-08-21 19:57:30 +0300">
-  <MetadataEntry key="HKMetadataKeyLapLength" value="50 m"/>
-  <MetadataEntry key="HKMetadataKeyIndoorWorkout" value="1"/>
-  <MetadataEntry key="HKMetadataKeySwimmingLocationType" value="1"/>
+  <MetadataEntry key="HKLapLength" value="50 m"/>
+  <MetadataEntry key="HKIndoorWorkout" value="1"/>
+  <MetadataEntry key="HKSwimmingLocationType" value="1"/>
   <WorkoutStatistics type="HKQuantityTypeIdentifierHeartRate" startDate="2026-08-21 19:10:00 +0300" endDate="2026-08-21 19:57:30 +0300" average="131" minimum="88" maximum="162" unit="count/min"/>
   <WorkoutStatistics type="HKQuantityTypeIdentifierSwimmingStrokeCount" startDate="2026-08-21 19:10:00 +0300" endDate="2026-08-21 19:57:30 +0300" sum="1040" unit="count"/>
   <WorkoutEvent type="HKWorkoutEventTypeLap" date="2026-08-21 19:10:00 +0300" duration="0.85" durationUnit="min"/>

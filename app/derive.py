@@ -117,12 +117,16 @@ async def rederive_workouts(conn, since: datetime | None) -> dict:
                         lap_count=lap_count, lap_total_s=lap_total)
         stats[d["swolf_method"] or "none"] += 1
         updates.append((d["lengths"], d["moving_s"], d["swolf"], d["swolf_gross"],
-                        d["pace_s_per_100m"], d["swolf_method"], wid))
+                        d["pace_s_per_100m"], d["swolf_method"],
+                        d["pool_length_m"], wid))
 
     async with conn.cursor() as c:
+        # pool_length_m is COALESCEd: derive only supplies one when it recovered
+        # it from lap splits, and must never overwrite a real metadata value.
         await c.executemany(
             "UPDATE workouts SET lengths=%s, moving_s=%s, swolf=%s, swolf_gross=%s,"
-            " pace_s_per_100m=%s, swolf_method=%s, updated_at=now() WHERE id=%s",
+            " pace_s_per_100m=%s, swolf_method=%s,"
+            " pool_length_m=COALESCE(pool_length_m, %s), updated_at=now() WHERE id=%s",
             updates)
     return stats
 

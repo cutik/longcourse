@@ -32,7 +32,7 @@ class BatchWriter:
 
     def __init__(self, conn, table: str, columns: Sequence[str],
                  conflict: Sequence[str], update: Sequence[str] | None = None,
-                 batch: int = BATCH):
+                 coalesce: Sequence[str] | None = None, batch: int = BATCH):
         self.conn = conn
         self.table = table
         self.columns = list(columns)
@@ -43,6 +43,12 @@ class BatchWriter:
         self.update = list(update) if update is not None else [
             c for c in self.columns if c not in self.conflict
         ]
+        # Columns updated as COALESCE(EXCLUDED.col, table.col): a null in the
+        # incoming row keeps whatever is already stored. This is what stops a
+        # source that does not know a field (export.xml carries no localised
+        # workout name; HAE carries no lap splits) from erasing a value another
+        # source did provide. A non-null incoming value still wins.
+        self.coalesce = set(coalesce or ())
         self.batch = batch
         self.stage = f"stage_{table}"
         self._rows: list[tuple] = []
@@ -80,7 +86,10 @@ class BatchWriter:
                     await cp.write_row(row)
 
             if self.update:
-                setters = ", ".join(f"{c}=EXCLUDED.{c}" for c in self.update)
+                setters = ", ".join(
+                    f"{c}=COALESCE(EXCLUDED.{c}, {self.table}.{c})"
+                    if c in self.coalesce else f"{c}=EXCLUDED.{c}"
+                    for c in self.update)
                 action = f"DO UPDATE SET {setters}"
             else:
                 action = "DO NOTHING"

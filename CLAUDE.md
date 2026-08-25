@@ -99,6 +99,15 @@ silently produce wrong or empty results.
    Still absent: `HKMetadataKeySwimmingStrokeStyle` is not present anywhere in
    the archive (0 entries), so there is no per-stroke breakdown.
 
+   **Metadata key names differ from the documentation.** The real `export.xml`
+   writes `HKLapLength`, `HKIndoorWorkout`, `HKSwimmingLocationType`,
+   `HKExternalUUID` — the short forms — not the `HKMetadataKey*` constants that
+   HealthKit's API and Apple's docs use, and that HAE echoes. Reading only the
+   long form nulled pool length and indoor/outdoor across the whole history.
+   The importer now reads both; the test fixture uses the short forms so a
+   regression is caught. Pool length is also recoverable from lap splits
+   (`distance / lap count`) when a workout carries neither key.
+
 5. **Energy is in kJ** despite field names implying kcal. `kcal()` converts.
 
 6. **`heartRateData` buckets use capitalised `Min`/`Avg`/`Max`** instead of
@@ -227,14 +236,23 @@ python3 tests/test_parsers.py
 ### Sanity check after any parser change
 
 ```sql
-select sport, is_indoor, pool_length_m, count(*),
+select sport, is_indoor, pool_length_m, swolf_method, count(*),
        round(avg(swolf)::numeric,1) swolf,
        round(avg(moving_s/nullif(duration_s,0))::numeric,2) ratio,
        round(avg(pace_s_per_100m)::numeric) pace
-from workouts group by 1,2,3 order by 4 desc;
+from workouts group by 1,2,3,4 order by 5 desc;
 ```
 
-Expected on current data: `swim | t | 50 | 94 | ~81 | ~0.72 | ~113`.
+Expected after the full backfill (measured from lap splits, 2026-08-25):
+`swim | t | 50 | lap | 385 | swolf ~88 | ratio ~0.82 | pace ~129`, plus one
+genuine 25m session and ~50 open-water swims with no pool length.
+
+These differ from the pre-backfill figures (`~81 / ~0.72 / ~113` over 94 HAE
+sessions) because those were the top-quartile *estimate*; the lap-measured
+active time is higher, so the ratio rose and the pace is honestly slower. That
+is the estimate understating active time, exactly as warned above — not a
+regression. Group by `swolf_method`; never compare a `lap` figure to an
+`estimated` one.
 
 ## MCP design
 

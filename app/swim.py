@@ -101,7 +101,8 @@ def derive_swim(distance_m: float | None, duration_s: float | None,
     stays visible next to the rest-excluded figure.
     """
     out = {"lengths": None, "moving_s": None, "swolf": None,
-           "swolf_gross": None, "pace_s_per_100m": None, "swolf_method": None}
+           "swolf_gross": None, "pace_s_per_100m": None, "swolf_method": None,
+           "pool_length_m": None}
     if not distance_m or distance_m <= 0:
         return out
 
@@ -109,6 +110,15 @@ def derive_swim(distance_m: float | None, duration_s: float | None,
         out["lengths"] = lap_count
         out["moving_s"] = lap_total_s
         out["swolf_method"] = "lap"
+        # Recover pool length from the splits when the workout metadata did not
+        # carry it: with one lap per length, distance / laps is the length. This
+        # only feeds the returned pool_length_m hint; it is validated to a
+        # plausible 5-100 m so a mis-shaped session cannot invent a pool.
+        if not pool_len:
+            cand = round(distance_m / lap_count)
+            if 5 <= cand <= 100:
+                out["pool_length_m"] = float(cand)
+                pool_len = float(cand)
     elif pool_len:
         out["lengths"] = max(1, round(distance_m / pool_len))
         est = moving_seconds(series or [], distance_m)

@@ -121,6 +121,20 @@ def _workout_fields(elem) -> dict:
             for m in elem.findall("MetadataEntry") if m.get("key")}
     stats = {s.get("type"): s for s in elem.findall("WorkoutStatistics") if s.get("type")}
 
+    def m2(*keys):
+        """Read a metadata value under any of its aliases.
+
+        The real export.xml uses short keys — HKLapLength, HKIndoorWorkout,
+        HKSwimmingLocationType — while HealthKit's API constants (and Apple's
+        own documentation) spell them HKMetadataKey*. An earlier version keyed on
+        the documented long form only and silently read NULL for every workout,
+        wiping pool length and indoor/outdoor on the whole history.
+        """
+        for k in keys:
+            if k in meta:
+                return meta[k]
+        return None
+
     activity = elem.get("workoutActivityType")
     sport = apple_sport(activity)
 
@@ -145,10 +159,11 @@ def _workout_fields(elem) -> dict:
     # Indoor is a boolean in metadata; swimming additionally carries a location
     # type where 1 is a pool and 2 is open water. Prefer the swim-specific one —
     # an open-water swim can still be flagged indoor=0 by a watch that lost GPS.
+    indoor_raw = m2("HKIndoorWorkout", "HKMetadataKeyIndoorWorkout")
     is_indoor = None
-    if "HKMetadataKeyIndoorWorkout" in meta:
-        is_indoor = meta["HKMetadataKeyIndoorWorkout"] in ("1", "true", "YES")
-    loc = meta.get("HKMetadataKeySwimmingLocationType")
+    if indoor_raw is not None:
+        is_indoor = indoor_raw in ("1", "true", "YES")
+    loc = m2("HKSwimmingLocationType", "HKMetadataKeySwimmingLocationType")
     if loc in ("1", "2"):
         is_indoor = loc == "1"
 
@@ -166,8 +181,8 @@ def _workout_fields(elem) -> dict:
         "min_hr": as_float(hr.get("minimum")) if hr is not None else None,
         "max_hr": as_float(hr.get("maximum")) if hr is not None else None,
         "stroke_count": as_float(strokes_stat.get("sum")) if strokes_stat is not None else None,
-        "pool_length_m": pool_length_from_text(meta.get("HKMetadataKeyLapLength")),
-        "external_id": meta.get("HKMetadataKeyExternalUUID"),
+        "pool_length_m": pool_length_from_text(m2("HKLapLength", "HKMetadataKeyLapLength")),
+        "external_id": m2("HKExternalUUID", "HKMetadataKeyExternalUUID"),
         "meta": meta,
     }
 
@@ -312,8 +327,15 @@ async def run_import(path: Path, dsn: str, tz: str, commit_every: int = 200_000)
         sleep = BatchWriter(conn, "sleep_segments", SLEEP_COLS,
                             conflict=("provider", "started_at", "stage", "source"))
         wk = BatchWriter(conn, "workouts", WORKOUT_COLS, conflict=("id",),
-                         # Never let the archive clobber columns derive.py owns.
-                         update=[c for c in WORKOUT_COLS if c != "id"])
+                         update=[c for c in WORKOUT_COLS if c != "id"],
+                         # Where a swim was already loaded via HAE, keep the
+                         # fields the archive does not carry rather than nulling
+                         # them: the localised name/location, and pool length or
+                         # indoor flag on any workout whose metadata lacks them.
+                         # derive.py owns the SWOLF columns and they are not in
+                         # WORKOUT_COLS here, so the archive never touches them.
+                         coalesce=("name_raw", "location_raw", "is_indoor",
+                                   "pool_length_m", "total_kcal"))
         laps = BatchWriter(conn, "workout_laps", LAP_COLS,
                            conflict=("workout_id", "idx"))
 
