@@ -164,6 +164,8 @@ truth — this is what made three parser rewrites cheap.
   table on purpose, so new export fields need no migration
 - `workout_laps` — per-length splits, if `export.xml` turns out to carry
   `HKWorkoutEventTypeLap` (see "Per-length splits" below)
+- `workout_routes` / `route_points` — GPX geometry: one summary row per route,
+  one row per GPS fix. Filled by `app/importers/routes.py`
 - `ingest_log` — feeds `/health` and the HA watchdog
 
 **Canonical**
@@ -294,7 +296,8 @@ Grafana dashboards imported and live 2026-08-26.
 - **Swim derivation**: 385 indoor 50m swims measured from lap splits
   (`swolf_method='lap'`), 1 genuine 25m, ~50 open-water (no pool, no SWOLF, by
   design), 3 pool swims without laps or a usable series.
-- **Grafana**: four dashboards imported into the existing TeslaMate instance via
+- **Grafana**: five dashboards (Swim, Open Water, Training load, Sleep, Body)
+  imported into the existing TeslaMate instance via
   **Dashboards → Import** (the classic JSON in `grafana/dashboards/*.json` — the
   instance is new enough that pasting into a new dashboard's *JSON model* editor
   fails on the v2 `dashboard.grafana.app` schema; Import migrates it). Datasource
@@ -361,11 +364,12 @@ listed for completeness, not queued. 1, 2 and 6 are live infrastructure.
    MCP plus a plan file in git, writing the next microcycle and notifying
    through HA. Worth building only after a few weeks of automated data.
 
-6. **GPX routes.** `workout_routes` exists but is empty. The native archive
-   ships a `workout-routes/` folder (389 routes in the current export) — more
-   tractable than the HAE case, since `export.xml` `<Workout>` elements carry a
-   `<WorkoutRoute>` child, so routes can be matched to workouts by start time
-   without parsing localised filenames. Still expect some timestamp skew.
+6. **GPX routes — done (2026-08-26).** `app/importers/routes.py` imported all
+   388 tracks (763,565 points): 45 open-water swims, 341 walks, 2 runs. The
+   archive links each route to its workout directly via
+   `<WorkoutRoute><FileReference path>`, so there was no filename matching to do
+   — the HAE-era worry did not apply. Geometry is in `route_points`; summary and
+   bounding box in `workout_routes`. The **Open Water** dashboard maps them.
 
 ### Open questions
 
@@ -396,7 +400,8 @@ Nothing new is deployed for them.
   than hand-editing JSON — the panels share query patterns that drift otherwise.
 
 The views (`v_swim_sessions`, `v_daily_metrics`, `v_sleep_nights`,
-`v_training_load`, `v_sessions`, `v_source_rank`) all expose a `time` column so
+`v_training_load`, `v_sessions`, `v_source_rank`, plus `v_route_points` and
+`v_open_water_swims` for the map) expose a `time` column so
 `$__timeFilter(time)` works. They are plain views, not materialised: at this
 data volume the cost is negligible and a stale materialised view showing last
 week's numbers would be worse than a slower query.

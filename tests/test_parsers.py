@@ -168,3 +168,25 @@ if failures:
         print(f"  - {f}")
     raise SystemExit(1)
 print("all checks passed")
+
+# ------------------------------------------------------------- gpx routes --
+print("\ngpx route parsing")
+from importers.routes import parse_gpx, haversine, _local
+
+check("namespace stripped", _local("{http://www.topografix.com/GPX/1/1}trkpt"), "trkpt")
+# ~111 km per degree of latitude; one thousandth is ~111 m. Kyiv longitude at
+# 50°N is ~71 m per thousandth. Just check the order of magnitude and symmetry.
+check("haversine ~111m per 0.001 lat",
+      haversine((50.0, 30.0), (50.001, 30.0)), 111.0, tol=2.0)
+check("haversine zero on identical point", haversine((50.0, 30.0), (50.0, 30.0)), 0.0, tol=1e-6)
+
+RGPX = Path(__file__).resolve().parent / "fixtures" / "route.gpx"
+pts = list(parse_gpx(RGPX))
+check("three track points parsed", len(pts), 3)
+ts, lat, lon, ele, speed = pts[0]
+check("lat read", lat, 50.247561, tol=1e-6)
+check("lon read", lon, 30.562085, tol=1e-6)
+check("elevation read", ele, 120.5, tol=1e-6)
+check("speed from extensions", speed, 0.80, tol=1e-6)
+check("timestamp parsed", ts.year, 2026)
+check("point without extensions still parses", pts[2][4], None)  # no speed

@@ -1,0 +1,466 @@
+{
+  "uid": "longcourse-ows",
+  "title": "Longcourse · Open water",
+  "tags": [
+    "longcourse"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30m",
+  "editable": true,
+  "time": {
+    "from": "now-3y",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "ds",
+        "label": "Datasource",
+        "type": "datasource",
+        "query": "grafana-postgresql-datasource",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "swim",
+        "label": "Swim (detail map)",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "${ds}"
+        },
+        "query": "SELECT id AS __value, to_char(time,'YYYY-MM-DD')||' · '||round(distance_m)||' m' AS __text FROM v_open_water_swims WHERE point_count IS NOT NULL ORDER BY time DESC",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "geomap",
+      "title": "Where I've swum",
+      "description": "Every open-water swim location. Points thinned to 1-in-8 for the overview; the detail map below shows a single swim at full resolution.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 14
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT latitude, longitude, day::text AS day, year\nFROM v_route_points\nWHERE sport = 'swim' AND is_indoor IS NOT TRUE AND nth % 8 = 0\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "view": {
+          "id": "coords",
+          "lat": 48.5,
+          "lon": 24.0,
+          "zoom": 4.0
+        },
+        "controls": {
+          "showZoom": true,
+          "showAttribution": true,
+          "showScale": true,
+          "showMeasure": false,
+          "showDebug": false,
+          "mouseWheelZoom": true
+        },
+        "basemap": {
+          "type": "default",
+          "name": "Basemap"
+        },
+        "layers": [
+          {
+            "type": "markers",
+            "name": "route",
+            "location": {
+              "mode": "coords",
+              "latitude": "latitude",
+              "longitude": "longitude"
+            },
+            "config": {
+              "style": {
+                "size": {
+                  "fixed": 5
+                },
+                "color": {
+                  "field": "year",
+                  "fixed": "dark-blue"
+                },
+                "opacity": 0.7
+              }
+            },
+            "tooltip": true
+          }
+        ],
+        "tooltip": {
+          "mode": "details"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Open-water swims",
+      "description": "Swims flagged not-indoor. Not all have a GPS track.",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 5
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT COUNT(*) AS value FROM v_open_water_swims WHERE $__timeFilter(time)\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "stat",
+      "title": "Total open-water distance",
+      "description": "",
+      "gridPos": {
+        "x": 16,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT SUM(distance_m) AS value FROM v_open_water_swims WHERE $__timeFilter(time)\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "lengthm"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "stat",
+      "title": "Longest swim",
+      "description": "",
+      "gridPos": {
+        "x": 20,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT MAX(distance_m) AS value FROM v_open_water_swims WHERE $__timeFilter(time)\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "lengthm"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "stat",
+      "title": "Median water temp",
+      "description": "From the watch's water-temperature sensor, where recorded.",
+      "gridPos": {
+        "x": 16,
+        "y": 9,
+        "w": 8,
+        "h": 5
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY water_c) AS value\nFROM v_open_water_swims WHERE $__timeFilter(time) AND water_c IS NOT NULL\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "celsius"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "geomap",
+      "title": "Selected swim",
+      "description": "One swim's track at full resolution. Pick it in the 'Swim (detail map)' dropdown. Grafana centres the map on the data.",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 16,
+        "h": 12
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT latitude, longitude, time\nFROM v_route_points\nWHERE workout_id = '$swim' AND sport = 'swim'\nORDER BY seq\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "view": {
+          "id": "coords",
+          "lat": 48.5,
+          "lon": 24.0,
+          "zoom": 12.0
+        },
+        "controls": {
+          "showZoom": true,
+          "showAttribution": true,
+          "showScale": true,
+          "showMeasure": false,
+          "showDebug": false,
+          "mouseWheelZoom": true
+        },
+        "basemap": {
+          "type": "default",
+          "name": "Basemap"
+        },
+        "layers": [
+          {
+            "type": "route",
+            "name": "route",
+            "location": {
+              "mode": "coords",
+              "latitude": "latitude",
+              "longitude": "longitude"
+            },
+            "config": {
+              "style": {
+                "color": {
+                  "fixed": "dark-blue"
+                },
+                "size": {
+                  "fixed": 2
+                },
+                "opacity": 0.8
+              }
+            },
+            "tooltip": true
+          }
+        ],
+        "tooltip": {
+          "mode": "details"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Water temperature",
+      "description": "",
+      "gridPos": {
+        "x": 16,
+        "y": 14,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT time, value AS \"°C\" FROM v_daily_metrics\nWHERE $__timeFilter(time) AND metric = 'water_temperature' ORDER BY 1\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "always",
+            "spanNulls": true,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "timeseries",
+      "title": "Open-water pace (s / 100 m)",
+      "description": "Open-water pace runs slower than pool: no walls, plus current, chop and sighting. Not comparable to pool pace.",
+      "gridPos": {
+        "x": 16,
+        "y": 20,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT time, pace_s_per_100m AS \"pace\" FROM v_open_water_swims\nWHERE $__timeFilter(time) AND pace_s_per_100m IS NOT NULL ORDER BY 1\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "always",
+            "spanNulls": true,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "table",
+      "title": "Open-water swims",
+      "description": "GPS distance is the track length; the two disagree when the watch lost signal underwater.",
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT time AS \"date\", ROUND(distance_m) AS \"m\",\n       ROUND(gps_distance_m) AS \"gps m\", ROUND(duration_s/60) AS \"min\",\n       ROUND(pace_s_per_100m::numeric) AS \"s/100m\",\n       ROUND(water_c::numeric, 1) AS \"water °C\", point_count AS \"gps pts\",\n       avg_hr, max_hr\nFROM v_open_water_swims\nWHERE $__timeFilter(time)\nORDER BY time DESC\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {}
+    }
+  ]
+}
