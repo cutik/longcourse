@@ -18,173 +18,60 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import re
+import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastmcp import FastMCP
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-# ------------------------------------------------------------------ options --
-OPTS: dict[str, Any] = {}
-_opts_file = Path("/data/options.json")
-if _opts_file.exists():
-    OPTS = json.loads(_opts_file.read_text())
+from canon import CANON, canonical, local_day, night_day, sleep_stage, to_canonical_value
+from db import BatchWriter, upsert_metric_meta
+from parse import kcal, parse_dt, pool_length_m, qty, to_meters
+from swim import SERIES_KEYS, classify, derive_swim
+from settings import DSN, TOKEN, TZ
 
-
-def opt(key: str, default: Any = None) -> Any:
-    return OPTS.get(key) or os.getenv(key.upper(), default)
-
-
-DSN = (
-    f"postgresql://{opt('db_user')}:{opt('db_password')}"
-    f"@{opt('db_host')}:{opt('db_port', 5432)}/{opt('db_name')}"
-)
-TOKEN = opt("ingest_token")
 SCHEMA = Path(__file__).with_name("schema.sql")
 
 pool: AsyncConnectionPool | None = None
 
+PROVIDER = "hae"        # dialect key for canon.py; the data itself is Apple's
+PROVIDER_ROW = "apple"  # what lands in the provider column, shared with export.xml
+
 
 # ----------------------------------------------------------------- parsing --
+# Value parsing lives in parse.py so the CLI importers can share it.
 
-_HAE_DT = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s*([+-]\d{4})?$")
-
-
-def parse_dt(v: Any) -> datetime | None:
-    if not isinstance(v, str) or not v.strip():
-        return None
-    m = _HAE_DT.match(v.strip())
-    if m:
-        d, t, off = m.groups()
-        return datetime.strptime(f"{d} {t} {off or '+0000'}", "%Y-%m-%d %H:%M:%S %z")
-    try:
-        return datetime.fromisoformat(v.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+# Column order for the workout upsert. Named explicitly because the tuple built
+# by workout_row() has to line up with it, and a silent misalignment writes
+# plausible-looking numbers into the wrong columns.
+WORKOUT_COLS = (
+    "id", "provider", "external_id", "sport", "is_indoor", "name_raw", "location_raw",
+    "started_at", "ended_at", "local_day", "duration_s", "distance_m",
+    "active_kcal", "total_kcal", "avg_hr", "min_hr", "max_hr", "hr_recovery",
+    "pool_length_m", "stroke_count", "swim_cadence",
+    "lengths", "moving_s", "swolf", "swolf_gross", "pace_s_per_100m", "swolf_method",
+    "raw",
+)
 
 
-def qty(obj: Any) -> float | None:
-    if isinstance(obj, dict):
-        v = obj.get("qty")
-        return float(v) if isinstance(v, (int, float)) else None
-    return float(obj) if isinstance(obj, (int, float)) else None
+def workout_row(w: dict, wid_for_start: dict[int, str] | None = None) -> tuple | None:
+    """Map one HAE workout onto WORKOUT_COLS.
 
-
-def units(obj: Any) -> str | None:
-    return obj.get("units") if isinstance(obj, dict) else None
-
-
-_DIST = {"m": 1.0, "km": 1000.0, "mi": 1609.344, "yd": 0.9144, "ft": 0.3048}
-
-
-def to_meters(obj: Any) -> float | None:
-    q, u = qty(obj), (units(obj) or "m").lower()
-    return None if q is None else q * _DIST.get(u, 1.0)
-
-
-def pool_length_m(obj: Any) -> float | None:
-    """Repair HAE's lapLength unit bug.
-
-    A 50m pool exports as {"units":"m","qty":0.05} — the number is kilometres
-    but the label says metres. No real pool is under a metre, so a sub-1 value
-    tagged as metres is unambiguously the km case.
+    `wid_for_start` maps a start-time epoch to an id already in the database.
+    The same session imported from export.xml has no HealthKit UUID and got a
+    synthetic id; reusing it here is what stops one swim becoming two rows.
     """
-    q = qty(obj)
-    if q is None or q <= 0:
-        return None
-    u = (units(obj) or "m").lower()
-    if u == "m" and q < 1:
-        q *= 1000.0
-    elif u != "m":
-        q *= _DIST.get(u, 1.0)
-    return q if 5 <= q <= 100 else None
-
-
-def kcal(obj: Any) -> float | None:
-    """HAE reports workout energy in kJ despite the field names."""
-    q, u = qty(obj), (units(obj) or "").lower()
-    if q is None:
-        return None
-    return q / 4.184 if u == "kj" else q
-
-
-# Structural swim signals — present regardless of interface language.
-SWIM_KEYS = ("swimDistance", "swimStroke", "swimCadence",
-             "totalSwimmingStrokeCount", "lapLength")
-
-
-def classify(w: dict) -> str:
-    """Derive sport without touching the localised name.
-
-    HAE returns name and location in the phone's language ("Басейн Плавання"),
-    so any ILIKE '%swim%' filter silently returns nothing for non-English
-    users. Structure is stable; strings are not.
-    """
-    if any(k in w for k in SWIM_KEYS):
-        return "swim"
-    if "stepCount" in w or "flightsClimbed" in w:
-        return "walk"
-    if "runningPower" in w or "runningSpeed" in w or "groundContactTime" in w:
-        return "run"
-    return "other"
-
-
-# Time-series keys we lift into workout_samples.
-SERIES_KEYS = ("swimStroke", "swimDistance", "heartRateData", "activeEnergy",
-               "basalEnergy", "heartRateRecovery", "stepCount", "speed")
-
-
-def moving_seconds(series: list[dict], total_distance_m: float | None) -> float | None:
-    """Estimate active swimming time, excluding rest between sets.
-
-    A binary "was this bucket active" filter does not work at per-minute
-    resolution: half a minute at the wall still leaves 20+ metres in the
-    bucket, so it counts as fully active. Measured on real sessions, a 5m
-    threshold removed only 7% of elapsed time — i.e. nothing.
-
-    So instead of finding rest, find the pace. The fastest buckets are the ones
-    swum without pauses and represent true swimming speed; active time is then
-    distance divided by that pace. Bucket boundaries stop mattering.
-
-    Returns None when the series is too short to establish a pace, and the
-    caller falls back to elapsed duration.
-    """
-    pts = sorted(
-        [(parse_dt(p.get("date")), qty(p)) for p in series if parse_dt(p.get("date"))],
-        key=lambda x: x[0],
-    )
-    if len(pts) < 6 or not total_distance_m:
-        return None
-    gaps = [(pts[i + 1][0] - pts[i][0]).total_seconds() for i in range(len(pts) - 1)]
-    width = sorted(gaps)[len(gaps) // 2]
-    if width <= 0:
-        return None
-
-    dists = sorted((q or 0) for _, q in pts)
-    top = dists[int(len(dists) * 0.75):]          # top quartile of buckets
-    if not top:
-        return None
-    per_bucket = sum(top) / len(top)
-    if per_bucket <= 0:
-        return None
-
-    speed = per_bucket / width                    # metres per second, swimming
-    est = total_distance_m / speed
-    # Never claim more active time than actually elapsed.
-    return est
-
-
-def workout_row(w: dict) -> tuple | None:
     wid = w.get("id") or w.get("uuid")
     start = parse_dt(w.get("start"))
     if not wid or not start:
         return None
+    external_id = str(wid)
+    if wid_for_start:
+        wid = wid_for_start.get(int(start.timestamp()), wid)
 
     sport = classify(w)
     duration_s = qty(w.get("duration"))
@@ -199,31 +86,24 @@ def workout_row(w: dict) -> tuple | None:
         first = hrr_series[0]
         hrr = first.get("Avg") if isinstance(first, dict) else None
 
-    # Derived swim figures. Computed here rather than in queries so every
-    # consumer sees the same numbers and the same rest-handling.
-    lengths = moving_s = swolf = swolf_gross = pace = None
-    if sport == "swim" and lap and distance_m and distance_m > 0:
-        lengths = max(1, round(distance_m / lap))
-        moving_s = moving_seconds(w.get("swimDistance") or [], distance_m)
-        if moving_s is None or (duration_s and moving_s > duration_s):
-            moving_s = duration_s
-        if strokes:
-            spl = strokes / lengths
-            if moving_s:
-                swolf = moving_s / lengths + spl
-            if duration_s:
-                swolf_gross = duration_s / lengths + spl
-        if moving_s:
-            pace = moving_s / (distance_m / 100.0)
+    # Derived swim figures are computed at ingest so every consumer sees the
+    # same numbers, and recomputed in bulk by derive.py when the formula
+    # changes — that path no longer needs the original payload re-posted.
+    d = (derive_swim(distance_m, duration_s, lap, strokes, w.get("swimDistance") or [])
+         if sport == "swim" else
+         {"lengths": None, "moving_s": None, "swolf": None, "swolf_gross": None,
+          "pace_s_per_100m": None, "swolf_method": None})
 
     return (
-        str(wid), sport, w.get("isIndoor"), w.get("name"), w.get("location"),
-        start, parse_dt(w.get("end")), duration_s, distance_m,
+        str(wid), PROVIDER_ROW, external_id,
+        sport, w.get("isIndoor"), w.get("name"), w.get("location"),
+        start, parse_dt(w.get("end")), local_day(start, TZ), duration_s, distance_m,
         kcal(w.get("activeEnergyBurned")), kcal(w.get("totalEnergy")),
         qty(w.get("avgHeartRate")) or qty(hr.get("avg")),
         qty(hr.get("min")), qty(w.get("maxHeartRate")) or qty(hr.get("max")),
         hrr, lap, strokes, qty(w.get("swimCadence")),
-        lengths, moving_s, swolf, swolf_gross, pace,
+        d["lengths"], d["moving_s"], d["swolf"], d["swolf_gross"],
+        d["pace_s_per_100m"], d["swolf_method"],
         json.dumps(w),
     )
 
@@ -251,9 +131,55 @@ def sample_rows(wid: str, w: dict) -> list[tuple]:
     return rows
 
 
+METRIC_COLS = ("name", "ts", "source", "qty", "units", "extra", "provider")
+OBS_COLS = ("provider", "metric", "ts", "local_day", "value", "unit", "source")
+SLEEP_COLS = ("provider", "started_at", "ended_at", "stage", "source", "local_day")
+SAMPLE_COLS = ("workout_id", "metric", "ts", "qty", "units", "extra")
+
+
+def sleep_rows(name: str, p: dict) -> list[tuple]:
+    """Turn one HAE sleep_analysis point into stage segments.
+
+    HAE reports a night as one object with per-stage hour totals plus the
+    night's boundaries, rather than the interval-per-stage records the native
+    export uses. There are no real per-stage timestamps to recover, so each
+    stage is written as a segment starting at sleepStart with its own duration:
+    the totals are exact, the ordering within the night is not, and nothing
+    downstream reads stage ordering.
+    """
+    if name != "sleep_analysis":
+        return []
+    start = parse_dt(p.get("sleepStart") or p.get("inBedStart") or p.get("date"))
+    if not start:
+        return []
+    src = p.get("source") or ""
+    day = night_day(start, TZ)
+    rows = []
+    for key, hours in p.items():
+        stage = sleep_stage(key)
+        if stage is None or not isinstance(hours, (int, float)) or hours <= 0:
+            continue
+        end = start + timedelta(hours=float(hours))
+        rows.append((PROVIDER_ROW, start, end, stage, src, day))
+    return rows
+
+
 async def store(payload: dict, sha: str) -> dict:
+    """Ingest one Health Auto Export push.
+
+    Writes go to two layers. `metrics`/`workouts`/`workout_samples` keep HAE's
+    own names and units — the raw landing zone, unchanged since v1 so a replay
+    of any archived payload still produces identical rows. `observations` and
+    `sleep_segments` hold the canonical, unit-normalised, provider-tagged view
+    that the dashboards read.
+
+    Everything is batched. The previous version issued one round-trip per data
+    point, which was survivable for an hourly push and is not survivable for a
+    backfill.
+    """
     data = payload.get("data", payload)
-    n_m = n_w = n_s = 0
+    counts: dict[str, int] = {"metrics": 0, "workouts": 0, "samples": 0,
+                              "observations": 0, "sleep": 0}
 
     async with pool.connection() as conn:
         await conn.execute(
@@ -262,69 +188,79 @@ async def store(payload: dict, sha: str) -> dict:
             (sha, json.dumps(payload)),
         )
 
+        raw_m = BatchWriter(conn, "metrics", METRIC_COLS,
+                            conflict=("name", "ts", "source"))
+        obs = BatchWriter(conn, "observations", OBS_COLS,
+                          conflict=("provider", "metric", "ts", "source"))
+        sleep = BatchWriter(conn, "sleep_segments", SLEEP_COLS,
+                            conflict=("provider", "started_at", "stage", "source"))
+        wk = BatchWriter(conn, "workouts", WORKOUT_COLS, conflict=("id",))
+        samples = BatchWriter(conn, "workout_samples", SAMPLE_COLS,
+                              conflict=("workout_id", "metric", "ts"))
+
         for m in data.get("metrics") or []:
             name, u = m.get("name"), m.get("units")
+            if not name:
+                continue
+            metric = canonical(PROVIDER, name)
             for p in m.get("data") or []:
                 ts = parse_dt(p.get("date"))
-                if not name or not ts:
+                if not ts:
                     continue
+                src = p.get("source") or ""
                 extra = {k: v for k, v in p.items()
                          if k not in {"date", "qty", "source", "units"}} or None
-                await conn.execute(
-                    "INSERT INTO metrics (name, ts, source, qty, units, extra) "
-                    "VALUES (%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT (name, ts, source) DO UPDATE SET "
-                    " qty=EXCLUDED.qty, units=EXCLUDED.units, extra=EXCLUDED.extra",
-                    (name, ts, p.get("source") or "", qty(p), u,
-                     json.dumps(extra) if extra else None),
-                )
-                n_m += 1
+                await raw_m.add((name, ts, src, qty(p), u,
+                                 json.dumps(extra) if extra else None, PROVIDER_ROW))
+                counts["metrics"] += 1
 
-        for w in data.get("workouts") or []:
-            row = workout_row(w)
+                for row in sleep_rows(name, p):
+                    await sleep.add(row)
+                    counts["sleep"] += 1
+
+                if metric:
+                    conv = to_canonical_value(metric, qty(p), u)
+                    if conv:
+                        value, unit = conv
+                        await obs.add((PROVIDER_ROW, metric, ts, local_day(ts, TZ),
+                                       value, unit, src))
+                        counts["observations"] += 1
+
+        workouts = data.get("workouts") or []
+        if workouts:
+            # A session already imported from export.xml has a synthetic id and
+            # no HealthKit UUID to match on; start time is the only shared key.
+            starts = [int(t.timestamp()) for t in
+                      (parse_dt(w.get("start")) for w in workouts) if t]
+            cur = await conn.execute(
+                "SELECT id, started_at FROM workouts WHERE started_at = ANY("
+                " SELECT to_timestamp(x) FROM unnest(%s::bigint[]) AS x)", (starts,))
+            by_start = {int(ts.timestamp()): wid for wid, ts in await cur.fetchall()}
+        else:
+            by_start = {}
+
+        for w in workouts:
+            row = workout_row(w, by_start)
             if not row:
                 continue
-            await conn.execute(
-                "INSERT INTO workouts (id,sport,is_indoor,name_raw,location_raw,"
-                " started_at,ended_at,duration_s,distance_m,active_kcal,total_kcal,"
-                " avg_hr,min_hr,max_hr,hr_recovery,pool_length_m,stroke_count,"
-                " swim_cadence,lengths,moving_s,swolf,swolf_gross,pace_s_per_100m,raw)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-                "         %s,%s,%s,%s,%s,%s)"
-                " ON CONFLICT (id) DO UPDATE SET"
-                " sport=EXCLUDED.sport, is_indoor=EXCLUDED.is_indoor,"
-                " name_raw=EXCLUDED.name_raw, location_raw=EXCLUDED.location_raw,"
-                " ended_at=EXCLUDED.ended_at, duration_s=EXCLUDED.duration_s,"
-                " distance_m=EXCLUDED.distance_m, active_kcal=EXCLUDED.active_kcal,"
-                " total_kcal=EXCLUDED.total_kcal, avg_hr=EXCLUDED.avg_hr,"
-                " min_hr=EXCLUDED.min_hr, max_hr=EXCLUDED.max_hr,"
-                " hr_recovery=EXCLUDED.hr_recovery,"
-                " pool_length_m=EXCLUDED.pool_length_m,"
-                " stroke_count=EXCLUDED.stroke_count,"
-                " swim_cadence=EXCLUDED.swim_cadence, lengths=EXCLUDED.lengths,"
-                " moving_s=EXCLUDED.moving_s, swolf=EXCLUDED.swolf,"
-                " swolf_gross=EXCLUDED.swolf_gross,"
-                " pace_s_per_100m=EXCLUDED.pace_s_per_100m,"
-                " raw=EXCLUDED.raw, updated_at=now()",
-                row,
-            )
-            n_w += 1
+            await wk.add(row)
+            counts["workouts"] += 1
+            # workout_samples has a foreign key onto workouts, so the parent
+            # rows have to be committed to the table before the children land.
+            await wk.flush()
             for sr in sample_rows(row[0], w):
-                await conn.execute(
-                    "INSERT INTO workout_samples (workout_id,metric,ts,qty,units,extra)"
-                    " VALUES (%s,%s,%s,%s,%s,%s)"
-                    " ON CONFLICT (workout_id,metric,ts) DO UPDATE SET"
-                    " qty=EXCLUDED.qty, units=EXCLUDED.units, extra=EXCLUDED.extra",
-                    sr,
-                )
-                n_s += 1
+                await samples.add(sr)
+                counts["samples"] += 1
+
+        for writer in (raw_m, obs, sleep, wk, samples):
+            await writer.flush()
 
         await conn.execute(
             "INSERT INTO ingest_log (n_metrics,n_workouts,n_samples) VALUES (%s,%s,%s)",
-            (n_m, n_w, n_s),
+            (counts["metrics"], counts["workouts"], counts["samples"]),
         )
 
-    return {"metrics": n_m, "workouts": n_w, "samples": n_s}
+    return counts
 
 
 # --------------------------------------------------------------------- MCP --
@@ -500,6 +436,9 @@ async def apply_schema() -> None:
         raise RuntimeError(f"{SCHEMA} missing — the image did not COPY db/schema.sql")
     async with pool.connection() as conn:
         await conn.execute(SCHEMA.read_text())
+        # metric_meta mirrors app/canon.py so the Grafana views can join against
+        # it. Rewritten every boot, so the code stays the single definition.
+        await upsert_metric_meta(conn, CANON)
     print(f"schema applied from {SCHEMA}", flush=True)
 
 
@@ -518,7 +457,16 @@ app = FastAPI(title="longcourse", lifespan=lifespan)
 
 
 def auth(authorization: str = Header(default="")) -> None:
-    if authorization != f"Bearer {TOKEN}":
+    """Bearer check for /ingest.
+
+    Fails closed when no token is configured: with `ingest_token` empty the old
+    comparison built the string "Bearer None" and happily accepted anyone who
+    sent it. Constant-time compare because this endpoint is reachable from the
+    internet through the Cloudflare tunnel.
+    """
+    if not TOKEN:
+        raise HTTPException(status_code=503, detail="ingest_token not configured")
+    if not secrets.compare_digest(authorization, f"Bearer {TOKEN}"):
         raise HTTPException(status_code=401, detail="bad token")
 
 

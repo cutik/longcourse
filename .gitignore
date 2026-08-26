@@ -1,0 +1,22 @@
+# Health exports contain medical data. They are dropped into the working tree
+# for backfill (see CLAUDE.md, "Re-deriving after a parser change") and must
+# never be committed. A real password already leaked into this repo once.
+*.json
+!grafana/dashboards/*.json
+*.xml
+!tests/fixtures/*.xml
+*.zip
+*.gpx
+apple_health_export/
+archive/
+
+# Secrets
+.env
+*.env
+options.json
+
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+venv/

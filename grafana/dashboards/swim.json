@@ -1,0 +1,474 @@
+{
+  "uid": "longcourse-swim",
+  "title": "Longcourse · Swim",
+  "tags": [
+    "longcourse"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30m",
+  "editable": true,
+  "time": {
+    "from": "now-1y",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "ds",
+        "label": "Datasource",
+        "type": "datasource",
+        "query": "grafana-postgresql-datasource",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "pool",
+        "label": "Pool length (m)",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "${ds}"
+        },
+        "query": "SELECT DISTINCT pool_length_m::text FROM v_swim_sessions WHERE pool_length_m IS NOT NULL ORDER BY 1",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "sort": 1,
+        "current": {
+          "text": "50",
+          "value": "50",
+          "selected": true
+        }
+      },
+      {
+        "name": "method",
+        "label": "SWOLF method",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "${ds}"
+        },
+        "query": "SELECT DISTINCT swolf_method FROM v_swim_sessions WHERE swolf_method IS NOT NULL ORDER BY 1",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "hide": 0,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Sessions",
+      "description": "Pool sessions at the selected course length.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT COUNT(*) AS value FROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "stat",
+      "title": "Total distance",
+      "description": "",
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT SUM(distance_m) AS value FROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "lengthm"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "stat",
+      "title": "Median pace",
+      "description": "Seconds per 100 m over active (rest-excluded) time.",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY pace_s_per_100m) AS value\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "stat",
+      "title": "Median SWOLF",
+      "description": "Seconds per length plus strokes per length. Only comparable within one pool length and one swolf_method.",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY swolf) AS value\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n  AND swolf_method IN ($method)\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "stat",
+      "title": "Median active ratio",
+      "description": "Active time over elapsed time. The remainder was spent at the wall.",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY active_ratio) AS value\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "stat",
+      "title": "Real lap splits",
+      "description": "Sessions where SWOLF was measured from per-length splits rather than estimated. Zero means every figure here is an estimate.",
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT COUNT(*) AS value FROM v_swim_sessions\nWHERE $__timeFilter(time) AND swolf_method = 'lap'\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "timeseries",
+      "title": "Distance per session",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT time, distance_m AS \"distance\"\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\nORDER BY 1\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "unit": "lengthm"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "timeseries",
+      "title": "Pace (s / 100 m, lower is faster)",
+      "description": "",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT time, pace_s_per_100m AS \"pace\"\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\nORDER BY 1\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "always",
+            "lineWidth": 2,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "timeseries",
+      "title": "SWOLF: rest-excluded vs gross",
+      "description": "The gap between the two is time spent standing at the wall. Only the lower line is a technique signal.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT time, swolf AS \"swolf (active)\", swolf_gross AS \"swolf (incl. rest)\"\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n  AND swolf_method IN ($method)\nORDER BY 1\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "always",
+            "lineWidth": 2,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "timeseries",
+      "title": "Strokes per length",
+      "description": "Apple Watch undercounts strokes — roughly 22-27 per 50 m against 30-40 counted by hand. The bias looks consistent, so the trend is usable but the absolute value is not.",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT time, strokes_per_length AS \"strokes/length\"\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\nORDER BY 1\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "always",
+            "lineWidth": 2,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "type": "table",
+      "title": "Sessions",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${ds}"
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT time AS \"date\", distance_m AS \"m\", ROUND(duration_s/60) AS \"elapsed min\",\n       ROUND(moving_s/60) AS \"active min\", ROUND(active_ratio::numeric, 2) AS \"ratio\",\n       lengths, ROUND(strokes_per_length::numeric, 1) AS \"str/len\",\n       ROUND(swolf::numeric, 1) AS swolf, swolf_method AS \"method\",\n       ROUND(pace_s_per_100m::numeric) AS \"s/100m\", avg_hr, max_hr\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\nORDER BY time DESC\n",
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${ds}"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {}
+    }
+  ]
+}

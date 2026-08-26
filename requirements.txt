@@ -1,0 +1,15 @@
+# Pinned deliberately. Supervisor rebuilds the image on its own schedule, and an
+# unpinned `pip install` meant a rebuild could silently pull a breaking FastMCP
+# or psycopg release into a running add-on. These are the versions current when
+# the working image was built (2026-08), i.e. the closest reproduction of it.
+#
+# Bump one at a time, rebuild, and check the logs for "schema applied" followed
+# by "Uvicorn running" before trusting it.
+fastapi==0.141.1
+uvicorn==0.52.4
+fastmcp==3.4.7
+psycopg[binary,pool]==3.3.4
+
+# Streaming JSON parser. Needed so a multi-hundred-MB HAE export can be read
+# with constant memory instead of json.loads'ing the whole thing on a Pi.
+ijson==3.5.1

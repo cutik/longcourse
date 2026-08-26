@@ -1,15 +1,15 @@
 name: Longcourse
-version: "0.2.1"
+version: "0.3.1"
 slug: longcourse
-description: Apple Health ingest + MCP server for swim coaching
+description: Apple Health ingest, normalisation and MCP server for swim coaching
 arch:
   - aarch64
   - amd64
 init: false
 startup: services
 boot: auto
-# Host port 8787. The iPhone reaches this over Tailscale; nothing is
-# published to the internet.
+# Host port 8787. The iPhone posts here over the LAN; the Cloudflare tunnel
+# reaches the same port for scheduled pushes from outside.
 ports:
   "8000/tcp": 8787
 ports_description:
@@ -23,6 +23,11 @@ options:
   db_password: ""
   db_name: longcourse
   ingest_token: ""
+  # Daily rollups are cut in this timezone rather than in UTC, which would
+  # misfile early-morning sessions onto the previous day.
+  tz: Europe/Kyiv
+  # Where large archives (export.xml, Samsung zip) are dropped over Samba.
+  archive_dir: /share/archive
 schema:
   db_host: str
   db_port: port
@@ -30,3 +35,5 @@ schema:
   db_password: password
   db_name: str
   ingest_token: password
+  tz: str
+  archive_dir: str
