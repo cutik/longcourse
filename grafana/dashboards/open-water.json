@@ -76,10 +76,9 @@
       },
       "options": {
         "view": {
-          "id": "coords",
-          "lat": 48.5,
-          "lon": 24.0,
-          "zoom": 4.0
+          "id": "fit",
+          "allLayers": true,
+          "padding": 30
         },
         "controls": {
           "showZoom": true,
@@ -299,10 +298,9 @@
       },
       "options": {
         "view": {
-          "id": "coords",
-          "lat": 48.5,
-          "lon": 24.0,
-          "zoom": 12.0
+          "id": "fit",
+          "allLayers": true,
+          "padding": 30
         },
         "controls": {
           "showZoom": true,

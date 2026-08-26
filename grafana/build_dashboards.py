@@ -91,16 +91,20 @@ def query_var(name: str, label: str, sql: str, current: str | None = None,
 
 
 def geomap(title: str, sql: str, x: int, y: int, w: int, h: int,
-           desc: str = "", layer: str = "markers",
-           center_lat: float = 0.0, center_lon: float = 0.0, zoom: float = 1.0,
-           color_field: str | None = None) -> dict:
-    """A geomap panel.
+           desc: str = "", layer: str = "markers") -> dict:
+    """A geomap panel that auto-frames its data.
 
     `markers` scatters a dot per row — right for a world overview of many
     routes, where a single connected line would draw nonsense lines between
     separate swims. `route` connects the rows in query order — right for one
     swim's shape. The query must return `latitude` and `longitude`; Grafana
     keys the location on those names.
+
+    The view is "fit", not fixed coordinates: the swims span Kyiv, Greece and
+    the Caribbean, so any fixed centre/zoom is wrong for most of them and the
+    map opens blank on empty water until you pan. Fit reframes to whatever the
+    query returned, so changing the time range (overview) or the selected swim
+    (detail) always centres on the data.
     """
     marker = {
         "type": layer, "name": "route",
@@ -111,10 +115,6 @@ def geomap(title: str, sql: str, x: int, y: int, w: int, h: int,
                                    "opacity": 0.8}}),
         "tooltip": True,
     }
-    if color_field and layer == "markers":
-        marker["config"]["style"]["color"] = {"field": color_field,
-                                              "fixed": "dark-blue"}
-        marker["config"]["style"]["opacity"] = 0.7
     t = target(sql)
     t["format"] = "table"
     return {
@@ -123,7 +123,9 @@ def geomap(title: str, sql: str, x: int, y: int, w: int, h: int,
         "datasource": DS, "targets": [t],
         "fieldConfig": {"defaults": {"custom": {}}, "overrides": []},
         "options": {
-            "view": {"id": "coords", "lat": center_lat, "lon": center_lon, "zoom": zoom},
+            # Fit to the returned points. `allLayers` so the fit considers the
+            # data layer, `padding` so markers are not jammed against the edge.
+            "view": {"id": "fit", "allLayers": True, "padding": 30},
             "controls": {"showZoom": True, "showAttribution": True, "showScale": True,
                          "showMeasure": False, "showDebug": False, "mouseWheelZoom": True},
             "basemap": {"type": "default", "name": "Basemap"},
@@ -273,7 +275,7 @@ WHERE sport = 'swim' AND is_indoor IS NOT TRUE AND nth % 8 = 0
                     "Points thinned to 1-in-8 for the overview; the detail map below "
                     "shows a single swim at full resolution. This map obeys the "
                     "dashboard time range, so it agrees with the stats on the right.",
-               layer="markers", center_lat=48.5, center_lon=24.0, zoom=4.0),
+               layer="markers"),
 
         panel("stat", "Open-water swims", """
 SELECT COUNT(*) AS value FROM v_open_water_swims WHERE $__timeFilter(time)
@@ -299,7 +301,7 @@ ORDER BY seq
 """, 0, 14, 16, 12,
                desc="One swim's track at full resolution. Pick it in the "
                     "'Swim (detail map)' dropdown. Grafana centres the map on the data.",
-               layer="route", center_lat=48.5, center_lon=24.0, zoom=12.0),
+               layer="route"),
 
         panel("timeseries", "Water temperature", """
 SELECT time, value AS "°C" FROM v_daily_metrics
