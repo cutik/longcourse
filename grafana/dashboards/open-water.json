@@ -10,7 +10,7 @@
   "refresh": "30m",
   "editable": true,
   "time": {
-    "from": "now-3y",
+    "from": "2023-01-01",
     "to": "now"
   },
   "templating": {
@@ -44,7 +44,7 @@
     {
       "type": "geomap",
       "title": "Where I've swum",
-      "description": "Every open-water swim location. Points thinned to 1-in-8 for the overview; the detail map below shows a single swim at full resolution.",
+      "description": "Every open-water swim location in the selected time range. Points thinned to 1-in-8 for the overview; the detail map below shows a single swim at full resolution. This map obeys the dashboard time range, so it agrees with the stats on the right.",
       "gridPos": {
         "x": 0,
         "y": 0,
@@ -59,7 +59,7 @@
         {
           "format": "table",
           "rawQuery": true,
-          "rawSql": "\nSELECT latitude, longitude, day::text AS day, year\nFROM v_route_points\nWHERE sport = 'swim' AND is_indoor IS NOT TRUE AND nth % 8 = 0\n",
+          "rawSql": "\nSELECT latitude, longitude, day::text AS day\nFROM v_route_points\nWHERE sport = 'swim' AND is_indoor IS NOT TRUE AND nth % 8 = 0\n  AND $__timeFilter(time)\n",
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
@@ -108,10 +108,9 @@
                   "fixed": 5
                 },
                 "color": {
-                  "field": "year",
                   "fixed": "dark-blue"
                 },
-                "opacity": 0.7
+                "opacity": 0.6
               }
             },
             "tooltip": true

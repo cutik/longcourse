@@ -264,15 +264,16 @@ ows = dashboard(
     ],
     panels=[
         geomap("Where I've swum", """
-SELECT latitude, longitude, day::text AS day, year
+SELECT latitude, longitude, day::text AS day
 FROM v_route_points
 WHERE sport = 'swim' AND is_indoor IS NOT TRUE AND nth % 8 = 0
+  AND $__timeFilter(time)
 """, 0, 0, 16, 14,
-               desc="Every open-water swim location. Points thinned to 1-in-8 for the "
-                    "overview; the detail map below shows a single swim at full "
-                    "resolution.",
-               layer="markers", center_lat=48.5, center_lon=24.0, zoom=4.0,
-               color_field="year"),
+               desc="Every open-water swim location in the selected time range. "
+                    "Points thinned to 1-in-8 for the overview; the detail map below "
+                    "shows a single swim at full resolution. This map obeys the "
+                    "dashboard time range, so it agrees with the stats on the right.",
+               layer="markers", center_lat=48.5, center_lon=24.0, zoom=4.0),
 
         panel("stat", "Open-water swims", """
 SELECT COUNT(*) AS value FROM v_open_water_swims WHERE $__timeFilter(time)
@@ -330,7 +331,7 @@ ORDER BY time DESC
 """, 0, 26, 24, 10, fmt="table",
               desc="GPS distance is the track length; the two disagree when the watch "
                    "lost signal underwater."),
-    ], from_="now-3y")
+    ], from_="2023-01-01")
 
 # --------------------------------------------------------- training load ---
 load = dashboard(
