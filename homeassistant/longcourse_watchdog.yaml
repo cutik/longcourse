@@ -1,0 +1,67 @@
+# Longcourse ingest watchdog for Home Assistant.
+#
+# Alerts when Health Auto Export stops feeding the pipeline. iOS only runs HAE
+# while the phone is unlocked, so short gaps are normal and the alert is
+# deliberately slow: it fires only when data is stale for a sustained stretch,
+# not on a single missed push or a transient 500 from the add-on.
+#
+# Install: drop this file in `config/packages/` and make sure configuration.yaml
+# has:
+#     homeassistant:
+#       packages: !include_dir_named packages
+# then reload YAML (Developer Tools -> YAML -> All) or restart HA.
+#
+# Notifications assume a `notify.mobile_app_*` service exists (the HA companion
+# app). Change the service under the automation if yours differs.
+
+rest:
+  - resource: http://172.30.33.11:8000/health
+    scan_interval: 1800          # every 30 min; the data is not more real-time
+    timeout: 15
+    sensor:
+      - name: Longcourse sync age
+        unique_id: longcourse_sync_age
+        # /health returns 999 when nothing has ever synced; default to the same
+        # so a failed request does not read as "fresh".
+        value_template: "{{ value_json.age_hours | default(999) }}"
+        unit_of_measurement: h
+        state_class: measurement
+        json_attributes:
+          - last_ingest
+          - last_metrics
+          - last_workouts
+
+template:
+  - binary_sensor:
+      - name: Longcourse ingest stale
+        unique_id: longcourse_ingest_stale
+        device_class: problem
+        # 18h: comfortably past a normal overnight gap (phone locked, no export
+        # runs), so a full day with no sync trips it but one quiet night does not.
+        state: >
+          {{ states('sensor.longcourse_sync_age') | float(999) > 18 }}
+        availability: >
+          {{ states('sensor.longcourse_sync_age') not in ['unknown', 'unavailable'] }}
+
+automation:
+  - alias: Longcourse ingest stalled
+    id: longcourse_ingest_stalled
+    description: >
+      Notify when the health pipeline has been stale for over two hours, i.e.
+      the staleness is not just a brief blip.
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.longcourse_ingest_stale
+        to: "on"
+        for:
+          hours: 2
+    action:
+      - service: notify.notify
+        data:
+          title: Longcourse sync stalled
+          message: >
+            No Health Auto Export data for
+            {{ states('sensor.longcourse_sync_age') | round(0) }} h
+            (last ingest {{ state_attr('sensor.longcourse_sync_age', 'last_ingest') }}).
+            Check the HAE automation on the phone.
+    mode: single

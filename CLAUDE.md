@@ -113,6 +113,15 @@ silently produce wrong or empty results.
 6. **`heartRateData` buckets use capitalised `Min`/`Avg`/`Max`** instead of
    `qty`, unlike every other series.
 
+7. **HAE metric names are its own dialect, and were verified against a real
+   payload (2026-08-27).** They differ from the export.xml identifiers —
+   `underwater_temperature` (not water), `cardio_recovery` (not
+   heart_rate_recovery), `stair_speed_up/down`, `six_minute_walking_test_distance`.
+   All are in `app/canon.py`'s `_HAE` map. A sleep night carries staged values
+   AND a `totalSleep` sum AND an `asleep` bucket at once; `app/sleep.py` writes
+   the stages when present and falls back to the total only when they are absent,
+   so a night is never counted twice.
+
 ### Active time and why SWOLF is an estimate
 
 `duration_s` includes rest at the wall. Raw SWOLF over elapsed time measures
@@ -322,34 +331,29 @@ the focus is a trustworthy, visible data foundation first — full history,
 normalisation, Grafana — not the agentic coach the repo was originally aimed at.
 Do not build out MCP tools, the weekly `claude -p` loop, or `ha-mcp` unless
 asked. A **Samsung Health** archive is expected (earlier, non-overlapping
-period → appends as `provider='samsung'`, no dedup); `app/importers/samsung.py`
-and its `canon.py` aliases are the remaining work there.
+period). **Abandoned 2026-08-27: Samsung deleted the data for age**, so there
+is no earlier archive to import. `provider='samsung'` support is unused.
 
 ### Not done yet
 
 Items 3 (`ha-mcp`) and 5 (weekly coach loop) fall under the deferral above —
 listed for completeness, not queued. 1, 2 and 6 are live infrastructure.
 
-1. **Scheduled export.** HAE → Automations → REST API, hourly, all metrics +
-   workouts, to `https://lc.cutik.info/ingest` with the three headers. Deferred
-   until a fresh swim exists to verify against. Note iOS only runs these while
-   the phone is unlocked — the pipeline is eventually-consistent by design, and
-   HAE may not resend windows that failed. Compare session counts against the
-   Health app after a week; a monthly manual Quick Export covers any gaps.
+1. **Scheduled export — runbook ready (2026-08-27), awaiting phone setup.**
+   Full instructions in `docs/scheduled-export.md`: HAE → Automations → REST API,
+   JSON, all metrics + workouts, rolling ~7-day window, hourly, to
+   `https://lc.cutik.info/ingest` with the three headers. **Prerequisite: deploy
+   v0.4+ first** — the pre-0.4 ingest wrote only raw `metrics`, not the canonical
+   `observations`/`sleep_segments` the dashboards read, so pushes onto old code
+   leave the dashboards flat. iOS runs HAE only while unlocked (eventually
+   consistent); the rolling window resends missed days, upserts dedup them.
 
-2. **Watchdog sensor.** REST sensor in HA against `/health`, alert when
-   `age_hours > 12`. Add the automation *after* the first successful scheduled
-   sync or it fires immediately.
+2. **Watchdog sensor — built (2026-08-27).** `homeassistant/longcourse_watchdog.yaml`:
+   REST sensor on `/health` every 30 min, a `binary_sensor` that trips at
+   `age_hours > 18`, and an automation that notifies after it stays stale two
+   hours (so a blip or one missed push does not page). Install after the first
+   scheduled sync or it fires against the pre-automation gap.
 
-   ```yaml
-   rest:
-     - resource: http://172.30.33.11:8000/health
-       scan_interval: 1800
-       sensor:
-         - name: Longcourse sync age
-           value_template: "{{ value_json.age_hours | default(999) }}"
-           unit_of_measurement: h
-   ```
 
 3. **`ha-mcp`** (HACS → `homeassistant-ai/ha-mcp`) so the same conversation can
    see bedroom climate, presence, smart-scale weight and calendar — context
