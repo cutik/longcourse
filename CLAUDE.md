@@ -29,7 +29,13 @@ Everything runs at home. Nothing is rented.
 - **One container, one process.** FastAPI serves `/ingest` and `/health`;
   FastMCP is mounted at `/mcp` on the same port (8000 inside, 8787 on the host).
 - **Cloudflare Tunnel** was already set up for `cutik.info` → Home Assistant.
-  This added `lc.cutik.info` → `172.30.33.11:8000` on the same tunnel.
+  This added `lc.cutik.info` → the longcourse add-on on the same tunnel.
+  **Point the tunnel ingress at the host port `http://192.168.50.221:8787`, not
+  the add-on's Docker IP.** The internal IP (it was `172.30.33.11:8000`) changes
+  every time the add-on is rebuilt, so a version bump silently broke the tunnel
+  with a 502 that looked exactly like an auth failure (empty response, generic
+  HAE error). The host port follows the container across rebuilds. Same rule for
+  the watchdog's `/health` URL. Debugging trail in `docs/scheduled-export.md`.
 
 ### Why not Tailscale
 

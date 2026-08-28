@@ -22,7 +22,7 @@ cd /addons/longcourse && git pull
 Confirm the receiving end is healthy:
 
 ```bash
-curl http://172.30.33.11:8000/health
+curl http://192.168.50.221:8787/health
 # {"ok":true,"last_ingest":"…","age_hours":…}
 ```
 
@@ -51,8 +51,28 @@ Authorization:           Bearer <ingest_token>
 
 The two `CF-Access-*` values are the Cloudflare Access **service token** for the
 `longcourse-ingest` app; `ingest_token` is the add-on's own option. Over the LAN
-(`http://172.30.33.11:8000/ingest`) the CF headers are not needed, but a phone
+(`http://192.168.50.221:8787/ingest`) the CF headers are not needed, but a phone
 out of the house needs the tunnel, so configure the tunnel URL with all three.
+
+## Troubleshooting: a 502 that looks like an auth failure
+
+If the tunnel returns 502 (HAE shows a generic "export did not complete" with an
+empty response body) while the LAN endpoint works, the Cloudflare tunnel is
+pointing at a stale origin. The add-on's **Docker internal IP changes every time
+it is rebuilt** (e.g. a version bump), and the cloudflared config hardcoded that
+IP — so a deploy silently broke the tunnel. Point the tunnel's ingress for
+`lc.cutik.info` at the **host port** instead, which follows the container:
+
+```
+http://192.168.50.221:8787
+```
+
+In the Cloudflared add-on that is Configuration → Additional Hosts →
+`lc.cutik.info` → `http://192.168.50.221:8787`, then restart cloudflared (a full
+HA restart works if the add-on refuses to restart on its own). Distinguish this
+from a real auth problem by the add-on log: a 502 never reaches the app and
+leaves no log line; a `401 bad token` does. Confirm the service token is valid
+separately — Cloudflare returns 403, not 502, when it is wrong.
 
 ### iOS reality
 

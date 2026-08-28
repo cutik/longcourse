@@ -15,7 +15,10 @@
 # app). Change the service under the automation if yours differs.
 
 rest:
-  - resource: http://172.30.33.11:8000/health
+  # Host port on the Pi's LAN IP, NOT the add-on's Docker IP (172.30.33.11):
+  # that internal IP changes every time the add-on is rebuilt, which silently
+  # broke the Cloudflare tunnel once. The host port follows the container.
+  - resource: http://192.168.50.221:8787/health
     scan_interval: 1800          # every 30 min; the data is not more real-time
     timeout: 15
     sensor:
