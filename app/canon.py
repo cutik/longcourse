@@ -172,6 +172,30 @@ _HAE = {
     "apple_stand_time":                  "stand_time",
     "swimming_distance":                 "distance_swimming",
     "swimming_stroke_count":             "swimming_strokes",
+    # Added after checking a real HAE payload — these names differ from the
+    # export.xml identifiers, and without them the metrics never reach the
+    # canonical layer or the dashboards. HAE's spellings, verified live:
+    "underwater_temperature":            "water_temperature",
+    "underwater_depth":                  "underwater_depth",
+    "cardio_recovery":                   "hr_recovery_1min",
+    "distance_cycling":                  "distance_cycling",
+    "running_speed":                     "running_speed",
+    "running_power":                     "running_power",
+    "running_stride_length":             "running_stride_length",
+    "running_vertical_oscillation":      "running_vertical_osc",
+    "running_ground_contact_time":       "running_ground_contact",
+    "physical_effort":                   "physical_effort",
+    "time_in_daylight":                  "time_in_daylight",
+    "environmental_audio_exposure":      "audio_exposure_env",
+    "headphone_audio_exposure":          "audio_exposure_phones",
+    "walking_speed":                     "walking_speed",
+    "walking_step_length":               "walking_step_length",
+    "walking_asymmetry_percentage":      "walking_asymmetry",
+    "walking_double_support_percentage": "walking_double_support",
+    "apple_walking_steadiness":          "walking_steadiness",
+    "stair_speed_up":                    "stair_ascent_speed",
+    "stair_speed_down":                  "stair_descent_speed",
+    "six_minute_walking_test_distance":  "six_minute_walk",
 }
 
 ALIASES: dict[str, dict[str, str]] = {"apple": _APPLE, "hae": _HAE, "samsung": {}}
@@ -277,14 +301,17 @@ SLEEP_STAGES = {
     "hkcategoryvaluesleepanalysisasleepcore":        "core",
     "hkcategoryvaluesleepanalysisasleepdeep":        "deep",
     "hkcategoryvaluesleepanalysisasleeprem":         "rem",
-    # HAE dialect
+    # HAE dialect. NOTE: HAE's per-night object carries both the staged values
+    # (core/deep/rem) and a `totalSleep` sum at once. `totalSleep` is therefore
+    # NOT a stage here — mapping it would write a duplicate 'asleep' segment on
+    # top of the stages and double the night. sleep_rows() handles it explicitly
+    # as a fallback only when no stages are present.
     "inbed":       "inbed",
     "asleep":      "asleep",
     "awake":       "awake",
     "core":        "core",
     "deep":        "deep",
     "rem":         "rem",
-    "totalsleep":  "asleep",
 }
 
 # Stages that represent actual sleep. 'asleep' is the unspecified bucket older

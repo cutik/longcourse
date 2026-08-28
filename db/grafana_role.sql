@@ -26,8 +26,11 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO longcourse_ro;
 
 -- New tables and views are created on every boot by apply_schema(), so the
 -- grant has to apply to future objects too or a dashboard breaks the next time
--- the schema grows.
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
+-- the schema grows. Default privileges are scoped to the creating role, so this
+-- must name `longcourse` (the app role that owns the tables) — a bare
+-- ALTER DEFAULT PRIVILEGES would only cover objects created by whoever runs
+-- this script.
+ALTER DEFAULT PRIVILEGES FOR ROLE longcourse IN SCHEMA public
     GRANT SELECT ON TABLES TO longcourse_ro;
 
 -- Belt and braces: revoke anything that would let a panel mutate data.

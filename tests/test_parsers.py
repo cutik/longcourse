@@ -168,3 +168,85 @@ if failures:
         print(f"  - {f}")
     raise SystemExit(1)
 print("all checks passed")
+
+# ------------------------------------------------------------- gpx routes --
+print("\ngpx route parsing")
+from importers.routes import parse_gpx, haversine, _local
+
+check("namespace stripped", _local("{http://www.topografix.com/GPX/1/1}trkpt"), "trkpt")
+# ~111 km per degree of latitude; one thousandth is ~111 m. Kyiv longitude at
+# 50°N is ~71 m per thousandth. Just check the order of magnitude and symmetry.
+check("haversine ~111m per 0.001 lat",
+      haversine((50.0, 30.0), (50.001, 30.0)), 111.0, tol=2.0)
+check("haversine zero on identical point", haversine((50.0, 30.0), (50.0, 30.0)), 0.0, tol=1e-6)
+
+RGPX = Path(__file__).resolve().parent / "fixtures" / "route.gpx"
+pts = list(parse_gpx(RGPX))
+check("three track points parsed", len(pts), 3)
+ts, lat, lon, ele, speed = pts[0]
+check("lat read", lat, 50.247561, tol=1e-6)
+check("lon read", lon, 30.562085, tol=1e-6)
+check("elevation read", ele, 120.5, tol=1e-6)
+check("speed from extensions", speed, 0.80, tol=1e-6)
+check("timestamp parsed", ts.year, 2026)
+check("point without extensions still parses", pts[2][4], None)  # no speed
+
+# ------------------------------------------------- HAE ingest parse path --
+# Validated against a real Health Auto Export payload, so daily pushes populate
+# the canonical layer instead of silently dropping metrics.
+print("\nHAE metric coverage")
+# Every metric name a real payload contained (minus sleep_analysis, handled
+# separately, and apple_stand_hour, a category marker left unmapped on purpose).
+HAE_METRICS = [
+    "apple_sleeping_wrist_temperature", "running_speed", "swimming_distance",
+    "walking_step_length", "vo2_max", "active_energy", "running_power",
+    "weight_body_mass", "heart_rate_variability", "running_vertical_oscillation",
+    "headphone_audio_exposure", "walking_asymmetry_percentage",
+    "walking_double_support_percentage", "six_minute_walking_test_distance",
+    "underwater_depth", "running_stride_length", "walking_running_distance",
+    "basal_energy_burned", "environmental_audio_exposure", "cardio_recovery",
+    "step_count", "blood_oxygen_saturation", "swimming_stroke_count",
+    "flights_climbed", "heart_rate", "resting_heart_rate",
+    "walking_heart_rate_average", "underwater_temperature", "physical_effort",
+    "running_ground_contact_time", "time_in_daylight", "apple_stand_time",
+    "apple_exercise_time", "respiratory_rate", "stair_speed_up",
+    "stair_speed_down", "walking_speed",
+]
+unmapped = [m for m in HAE_METRICS if canonical("hae", m) is None]
+check("every real HAE metric maps to canon", unmapped, [])
+check("underwater_temperature -> water_temperature",
+      canonical("hae", "underwater_temperature"), "water_temperature")
+check("cardio_recovery -> hr_recovery_1min",
+      canonical("hae", "cardio_recovery"), "hr_recovery_1min")
+check("stair_speed_up -> stair_ascent_speed",
+      canonical("hae", "stair_speed_up"), "stair_ascent_speed")
+
+print("\nHAE sleep: stages present, no double-count")
+from sleep import sleep_rows
+# The real shape: staged values AND totalSleep AND asleep in one object.
+night = {
+    "rem": 2.0037, "core": 4.6227, "date": "2025-10-17 00:00:00 +0300",
+    "deep": 0.6901, "awake": 0.0333, "inBed": 0.0, "asleep": 0.0,
+    "source": "Vitalii Apple Watch",
+    "sleepStart": "2025-10-16 22:33:05 +0300",
+    "sleepEnd": "2025-10-17 05:54:04 +0300",
+    "totalSleep": 7.3165,
+}
+rows = sleep_rows(night)
+stages = {r[3]: (r[2] - r[1]).total_seconds() / 3600 for r in rows}
+check("staged night has no duplicate 'asleep' segment",
+      "asleep" in stages, False)
+check("staged night keeps core/deep/rem (+awake here)",
+      all(k in stages for k in ("core", "deep", "rem")), True)
+check("staged total ~= totalSleep (not doubled)",
+      stages["core"] + stages["deep"] + stages["rem"], 7.3165, tol=0.01)
+check("night attributed to wake-up day", rows[0][5].isoformat(), "2025-10-17")
+
+# An older-style night with only a total and no stages falls back to 'asleep'.
+old_night = {"asleep": 0.0, "totalSleep": 6.5,
+             "sleepStart": "2023-01-05 23:10:00 +0200", "source": "Watch"}
+old_rows = sleep_rows(old_night)
+old_stages = {r[3]: (r[2] - r[1]).total_seconds() / 3600 for r in old_rows}
+check("stageless night falls back to one 'asleep' segment",
+      list(old_stages), ["asleep"])
+check("fallback uses totalSleep hours", old_stages.get("asleep"), 6.5, tol=0.01)

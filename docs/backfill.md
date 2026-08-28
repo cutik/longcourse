@@ -113,6 +113,22 @@ WHERE metric = 'steps' ORDER BY time DESC LIMIT 14;
 Then post one fresh HAE push and confirm it adds to the history rather than
 replacing it, and that `/health` reports a recent `age_hours`.
 
+### 6. Import GPX routes
+
+The archive links each route to its workout directly — a `<Workout>` carries
+`<WorkoutRoute><FileReference path="/workout-routes/route_*.gpx"/>` — so no
+filename matching is needed.
+
+```bash
+docker exec addon_local_longcourse \
+  python -m importers.routes /share/archive/apple_health_export/export.xml
+```
+
+It reads export.xml for each workout's route file, resolves the workout id by
+start time, parses the GPX and fills `route_points` (one row per GPS fix, full
+resolution) plus a `workout_routes` summary. Idempotent. ~760k points for a
+four-year archive; open-water swims are the subset the Open Water dashboard maps.
+
 ## Samsung Health
 
 Not built yet — waiting on the archive. It covers an earlier, non-overlapping

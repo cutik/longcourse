@@ -393,3 +393,72 @@ SELECT date_trunc('week', COALESCE(local_day,
        AVG(avg_hr)                           AS avg_hr
 FROM workouts
 GROUP BY 1, 2;
+
+-- ============================================================================
+-- Route geometry (GPX)
+--
+-- The native archive links each route to its workout directly: a <Workout>
+-- carries <WorkoutRoute><FileReference path="/workout-routes/route_*.gpx"/>.
+-- No filename-timestamp guessing (the HAE-era matching problem) is needed.
+--
+-- workout_routes holds one summary row per route; route_points holds the
+-- geometry, one row per GPS fix, which is the shape Grafana's geomap reads.
+-- Full fidelity is kept here (a long run is ~20k points); the dashboards
+-- downsample in the query, not at import.
+-- ============================================================================
+
+ALTER TABLE workout_routes ADD COLUMN IF NOT EXISTS ended_at   TIMESTAMPTZ;
+ALTER TABLE workout_routes ADD COLUMN IF NOT EXISTS distance_m DOUBLE PRECISION;
+ALTER TABLE workout_routes ADD COLUMN IF NOT EXISTS min_lat DOUBLE PRECISION;
+ALTER TABLE workout_routes ADD COLUMN IF NOT EXISTS max_lat DOUBLE PRECISION;
+ALTER TABLE workout_routes ADD COLUMN IF NOT EXISTS min_lon DOUBLE PRECISION;
+ALTER TABLE workout_routes ADD COLUMN IF NOT EXISTS max_lon DOUBLE PRECISION;
+ALTER TABLE workout_routes ADD COLUMN IF NOT EXISTS center_lat DOUBLE PRECISION;
+ALTER TABLE workout_routes ADD COLUMN IF NOT EXISTS center_lon DOUBLE PRECISION;
+-- `points JSONB` (from v1) is left unused; route_points is the geometry source.
+
+CREATE TABLE IF NOT EXISTS route_points (
+    workout_id TEXT        NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+    seq        INTEGER     NOT NULL,      -- 0-based order within the track
+    ts         TIMESTAMPTZ,
+    lat        DOUBLE PRECISION NOT NULL,
+    lon        DOUBLE PRECISION NOT NULL,
+    ele_m      DOUBLE PRECISION,
+    speed_ms   DOUBLE PRECISION,
+    PRIMARY KEY (workout_id, seq)
+);
+CREATE INDEX IF NOT EXISTS route_points_workout_idx ON route_points (workout_id, seq);
+
+-- Every route point tagged with its workout's sport and water flag, so the
+-- geomap can filter to open-water swims without a join in each panel. `nth`
+-- lets a panel thin a dense track cheaply: WHERE nth % 10 = 0.
+CREATE OR REPLACE VIEW v_route_points AS
+SELECT rp.workout_id, rp.seq,
+       ROW_NUMBER() OVER (PARTITION BY rp.workout_id ORDER BY rp.seq) AS nth,
+       rp.ts AS time, rp.lat AS latitude, rp.lon AS longitude,
+       rp.ele_m, rp.speed_ms,
+       w.sport, w.is_indoor,
+       COALESCE(w.local_day, (w.started_at AT TIME ZONE 'Europe/Kyiv')::date) AS day,
+       EXTRACT(year FROM w.started_at)::int AS year
+FROM route_points rp
+JOIN workouts w ON w.id = rp.workout_id;
+
+-- One row per open-water swim that has a track: summary plus map centre.
+-- Open water = a swim not flagged indoor. These are the routes the Open Water
+-- Swim dashboard maps.
+CREATE OR REPLACE VIEW v_open_water_swims AS
+SELECT w.started_at AS time, w.id,
+       COALESCE(w.local_day, (w.started_at AT TIME ZONE 'Europe/Kyiv')::date) AS day,
+       w.distance_m, w.duration_s, w.moving_s, w.avg_hr, w.max_hr,
+       w.pace_s_per_100m,
+       r.point_count, r.distance_m AS gps_distance_m,
+       r.center_lat, r.center_lon, r.min_lat, r.max_lat, r.min_lon, r.max_lon,
+       wt.water_c
+FROM workouts w
+LEFT JOIN workout_routes r ON r.workout_id = w.id
+LEFT JOIN LATERAL (
+    SELECT AVG(value) AS water_c FROM observations o
+    WHERE o.metric = 'water_temperature'
+      AND o.ts BETWEEN w.started_at AND COALESCE(w.ended_at, w.started_at + interval '6 hours')
+) wt ON TRUE
+WHERE w.sport = 'swim' AND w.is_indoor IS NOT TRUE;

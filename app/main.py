@@ -32,6 +32,7 @@ from canon import CANON, canonical, local_day, night_day, sleep_stage, to_canoni
 from db import BatchWriter, upsert_metric_meta
 from parse import kcal, parse_dt, pool_length_m, qty, to_meters
 from swim import SERIES_KEYS, classify, derive_swim
+from sleep import sleep_rows as _sleep_rows
 from settings import DSN, TOKEN, TZ
 
 SCHEMA = Path(__file__).with_name("schema.sql")
@@ -137,33 +138,6 @@ SLEEP_COLS = ("provider", "started_at", "ended_at", "stage", "source", "local_da
 SAMPLE_COLS = ("workout_id", "metric", "ts", "qty", "units", "extra")
 
 
-def sleep_rows(name: str, p: dict) -> list[tuple]:
-    """Turn one HAE sleep_analysis point into stage segments.
-
-    HAE reports a night as one object with per-stage hour totals plus the
-    night's boundaries, rather than the interval-per-stage records the native
-    export uses. There are no real per-stage timestamps to recover, so each
-    stage is written as a segment starting at sleepStart with its own duration:
-    the totals are exact, the ordering within the night is not, and nothing
-    downstream reads stage ordering.
-    """
-    if name != "sleep_analysis":
-        return []
-    start = parse_dt(p.get("sleepStart") or p.get("inBedStart") or p.get("date"))
-    if not start:
-        return []
-    src = p.get("source") or ""
-    day = night_day(start, TZ)
-    rows = []
-    for key, hours in p.items():
-        stage = sleep_stage(key)
-        if stage is None or not isinstance(hours, (int, float)) or hours <= 0:
-            continue
-        end = start + timedelta(hours=float(hours))
-        rows.append((PROVIDER_ROW, start, end, stage, src, day))
-    return rows
-
-
 async def store(payload: dict, sha: str) -> dict:
     """Ingest one Health Auto Export push.
 
@@ -214,9 +188,10 @@ async def store(payload: dict, sha: str) -> dict:
                                  json.dumps(extra) if extra else None, PROVIDER_ROW))
                 counts["metrics"] += 1
 
-                for row in sleep_rows(name, p):
-                    await sleep.add(row)
-                    counts["sleep"] += 1
+                if name == "sleep_analysis":
+                    for row in _sleep_rows(p):
+                        await sleep.add(row)
+                        counts["sleep"] += 1
 
                 if metric:
                     conv = to_canonical_value(metric, qty(p), u)

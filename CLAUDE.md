@@ -29,7 +29,13 @@ Everything runs at home. Nothing is rented.
 - **One container, one process.** FastAPI serves `/ingest` and `/health`;
   FastMCP is mounted at `/mcp` on the same port (8000 inside, 8787 on the host).
 - **Cloudflare Tunnel** was already set up for `cutik.info` → Home Assistant.
-  This added `lc.cutik.info` → `172.30.33.11:8000` on the same tunnel.
+  This added `lc.cutik.info` → the longcourse add-on on the same tunnel.
+  **Point the tunnel ingress at the host port `http://192.168.50.221:8787`, not
+  the add-on's Docker IP.** The internal IP (it was `172.30.33.11:8000`) changes
+  every time the add-on is rebuilt, so a version bump silently broke the tunnel
+  with a 502 that looked exactly like an auth failure (empty response, generic
+  HAE error). The host port follows the container across rebuilds. Same rule for
+  the watchdog's `/health` URL. Debugging trail in `docs/scheduled-export.md`.
 
 ### Why not Tailscale
 
@@ -113,6 +119,15 @@ silently produce wrong or empty results.
 6. **`heartRateData` buckets use capitalised `Min`/`Avg`/`Max`** instead of
    `qty`, unlike every other series.
 
+7. **HAE metric names are its own dialect, and were verified against a real
+   payload (2026-08-27).** They differ from the export.xml identifiers —
+   `underwater_temperature` (not water), `cardio_recovery` (not
+   heart_rate_recovery), `stair_speed_up/down`, `six_minute_walking_test_distance`.
+   All are in `app/canon.py`'s `_HAE` map. A sleep night carries staged values
+   AND a `totalSleep` sum AND an `asleep` bucket at once; `app/sleep.py` writes
+   the stages when present and falls back to the total only when they are absent,
+   so a night is never counted twice.
+
 ### Active time and why SWOLF is an estimate
 
 `duration_s` includes rest at the wall. Raw SWOLF over elapsed time measures
@@ -164,6 +179,8 @@ truth — this is what made three parser rewrites cheap.
   table on purpose, so new export fields need no migration
 - `workout_laps` — per-length splits, if `export.xml` turns out to carry
   `HKWorkoutEventTypeLap` (see "Per-length splits" below)
+- `workout_routes` / `route_points` — GPX geometry: one summary row per route,
+  one row per GPS fix. Filled by `app/importers/routes.py`
 - `ingest_log` — feeds `/health` and the HA watchdog
 
 **Canonical**
@@ -294,7 +311,8 @@ Grafana dashboards imported and live 2026-08-26.
 - **Swim derivation**: 385 indoor 50m swims measured from lap splits
   (`swolf_method='lap'`), 1 genuine 25m, ~50 open-water (no pool, no SWOLF, by
   design), 3 pool swims without laps or a usable series.
-- **Grafana**: four dashboards imported into the existing TeslaMate instance via
+- **Grafana**: five dashboards (Swim, Open Water, Training load, Sleep, Body)
+  imported into the existing TeslaMate instance via
   **Dashboards → Import** (the classic JSON in `grafana/dashboards/*.json` — the
   instance is new enough that pasting into a new dashboard's *JSON model* editor
   fails on the v2 `dashboard.grafana.app` schema; Import migrates it). Datasource
@@ -319,34 +337,29 @@ the focus is a trustworthy, visible data foundation first — full history,
 normalisation, Grafana — not the agentic coach the repo was originally aimed at.
 Do not build out MCP tools, the weekly `claude -p` loop, or `ha-mcp` unless
 asked. A **Samsung Health** archive is expected (earlier, non-overlapping
-period → appends as `provider='samsung'`, no dedup); `app/importers/samsung.py`
-and its `canon.py` aliases are the remaining work there.
+period). **Abandoned 2026-08-27: Samsung deleted the data for age**, so there
+is no earlier archive to import. `provider='samsung'` support is unused.
 
 ### Not done yet
 
 Items 3 (`ha-mcp`) and 5 (weekly coach loop) fall under the deferral above —
 listed for completeness, not queued. 1, 2 and 6 are live infrastructure.
 
-1. **Scheduled export.** HAE → Automations → REST API, hourly, all metrics +
-   workouts, to `https://lc.cutik.info/ingest` with the three headers. Deferred
-   until a fresh swim exists to verify against. Note iOS only runs these while
-   the phone is unlocked — the pipeline is eventually-consistent by design, and
-   HAE may not resend windows that failed. Compare session counts against the
-   Health app after a week; a monthly manual Quick Export covers any gaps.
+1. **Scheduled export — runbook ready (2026-08-27), awaiting phone setup.**
+   Full instructions in `docs/scheduled-export.md`: HAE → Automations → REST API,
+   JSON, all metrics + workouts, rolling ~7-day window, hourly, to
+   `https://lc.cutik.info/ingest` with the three headers. **Prerequisite: deploy
+   v0.4+ first** — the pre-0.4 ingest wrote only raw `metrics`, not the canonical
+   `observations`/`sleep_segments` the dashboards read, so pushes onto old code
+   leave the dashboards flat. iOS runs HAE only while unlocked (eventually
+   consistent); the rolling window resends missed days, upserts dedup them.
 
-2. **Watchdog sensor.** REST sensor in HA against `/health`, alert when
-   `age_hours > 12`. Add the automation *after* the first successful scheduled
-   sync or it fires immediately.
+2. **Watchdog sensor — built (2026-08-27).** `homeassistant/longcourse_watchdog.yaml`:
+   REST sensor on `/health` every 30 min, a `binary_sensor` that trips at
+   `age_hours > 18`, and an automation that notifies after it stays stale two
+   hours (so a blip or one missed push does not page). Install after the first
+   scheduled sync or it fires against the pre-automation gap.
 
-   ```yaml
-   rest:
-     - resource: http://172.30.33.11:8000/health
-       scan_interval: 1800
-       sensor:
-         - name: Longcourse sync age
-           value_template: "{{ value_json.age_hours | default(999) }}"
-           unit_of_measurement: h
-   ```
 
 3. **`ha-mcp`** (HACS → `homeassistant-ai/ha-mcp`) so the same conversation can
    see bedroom climate, presence, smart-scale weight and calendar — context
@@ -361,11 +374,12 @@ listed for completeness, not queued. 1, 2 and 6 are live infrastructure.
    MCP plus a plan file in git, writing the next microcycle and notifying
    through HA. Worth building only after a few weeks of automated data.
 
-6. **GPX routes.** `workout_routes` exists but is empty. The native archive
-   ships a `workout-routes/` folder (389 routes in the current export) — more
-   tractable than the HAE case, since `export.xml` `<Workout>` elements carry a
-   `<WorkoutRoute>` child, so routes can be matched to workouts by start time
-   without parsing localised filenames. Still expect some timestamp skew.
+6. **GPX routes — done (2026-08-26).** `app/importers/routes.py` imported all
+   388 tracks (763,565 points): 45 open-water swims, 341 walks, 2 runs. The
+   archive links each route to its workout directly via
+   `<WorkoutRoute><FileReference path>`, so there was no filename matching to do
+   — the HAE-era worry did not apply. Geometry is in `route_points`; summary and
+   bounding box in `workout_routes`. The **Open Water** dashboard maps them.
 
 ### Open questions
 
@@ -396,7 +410,8 @@ Nothing new is deployed for them.
   than hand-editing JSON — the panels share query patterns that drift otherwise.
 
 The views (`v_swim_sessions`, `v_daily_metrics`, `v_sleep_nights`,
-`v_training_load`, `v_sessions`, `v_source_rank`) all expose a `time` column so
+`v_training_load`, `v_sessions`, `v_source_rank`, plus `v_route_points` and
+`v_open_water_swims` for the map) expose a `time` column so
 `$__timeFilter(time)` works. They are plain views, not materialised: at this
 data volume the cost is negligible and a stale materialised view showing last
 week's numbers would be worse than a slower query.
