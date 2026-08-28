@@ -15,10 +15,12 @@
 # app). Change the service under the automation if yours differs.
 
 rest:
-  # Host port on the Pi's LAN IP, NOT the add-on's Docker IP (172.30.33.11):
-  # that internal IP changes every time the add-on is rebuilt, which silently
-  # broke the Cloudflare tunnel once. The host port follows the container.
-  - resource: http://192.168.50.221:8787/health
+  # The add-on's published host port via the Supervisor host gateway. NOT the
+  # add-on's Docker IP (172.30.33.11) — that changes on every rebuild and once
+  # silently broke the tunnel. NOT the Pi's LAN IP either — HA Core is itself a
+  # container and hairpin NAT can stop it reaching the host's external IP. The
+  # gateway 172.30.32.1 is reachable from inside and the :8787 port is stable.
+  - resource: http://172.30.32.1:8787/health
     scan_interval: 1800          # every 30 min; the data is not more real-time
     timeout: 15
     sensor:
