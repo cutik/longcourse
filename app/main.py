@@ -429,7 +429,11 @@ async def apply_schema() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool
-    pool = AsyncConnectionPool(DSN, min_size=1, max_size=4, open=False)
+    # check= pings a connection before handing it out. Without it a Postgres
+    # restart (the add-on updates on its own) left dead connections in the
+    # pool, and the next /health 500'd with AdminShutdown.
+    pool = AsyncConnectionPool(DSN, min_size=1, max_size=4, open=False,
+                               check=AsyncConnectionPool.check_connection)
     await pool.open()
     await apply_schema()
     async with mcp_app.lifespan(app):
