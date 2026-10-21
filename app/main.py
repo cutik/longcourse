@@ -31,6 +31,7 @@ from psycopg_pool import AsyncConnectionPool
 from canon import CANON, canonical, local_day, night_day, sleep_stage, to_canonical_value
 from db import BatchWriter, upsert_metric_meta
 from parse import kcal, parse_dt, pool_length_m, qty, to_meters
+from importers.routes import hae_points, route_writers, write_route
 from swim import SERIES_KEYS, classify, derive_swim
 from sleep import sleep_rows as _sleep_rows
 from settings import DSN, TOKEN, TZ
@@ -153,7 +154,7 @@ async def store(payload: dict, sha: str) -> dict:
     """
     data = payload.get("data", payload)
     counts: dict[str, int] = {"metrics": 0, "workouts": 0, "samples": 0,
-                              "observations": 0, "sleep": 0}
+                              "observations": 0, "sleep": 0, "route_points": 0}
 
     async with pool.connection() as conn:
         await conn.execute(
@@ -175,6 +176,7 @@ async def store(payload: dict, sha: str) -> dict:
         wk = BatchWriter(conn, "workouts", WORKOUT_COLS, conflict=("id",))
         samples = BatchWriter(conn, "workout_samples", SAMPLE_COLS,
                               conflict=("workout_id", "metric", "ts"))
+        rpts, rsum = route_writers(conn)
 
         for m in data.get("metrics") or []:
             name, u = m.get("name"), m.get("units")
@@ -231,7 +233,19 @@ async def store(payload: dict, sha: str) -> dict:
                 await samples.add(sr)
                 counts["samples"] += 1
 
-        for writer in (raw_m, obs, sleep, wk, samples):
+            # The rolling window resends the same track every hour; rewrite it
+            # only when the fix count changed.
+            route = hae_points(w.get("route"))
+            if route:
+                cur = await conn.execute(
+                    "SELECT point_count FROM workout_routes WHERE workout_id = %s",
+                    (row[0],))
+                have = await cur.fetchone()
+                if not have or have[0] != len(route):
+                    counts["route_points"] += await write_route(
+                        conn, rpts, rsum, row[0], "hae", route)
+
+        for writer in (raw_m, obs, sleep, wk, samples, rpts, rsum):
             await writer.flush()
 
         await conn.execute(

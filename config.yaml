@@ -1,5 +1,5 @@
 name: Longcourse
-version: "0.4.2"
+version: "0.4.3"
 slug: longcourse
 description: Apple Health ingest, normalisation and MCP server for swim coaching
 arch:

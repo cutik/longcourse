@@ -191,6 +191,30 @@ check("speed from extensions", speed, 0.80, tol=1e-6)
 check("timestamp parsed", ts.year, 2026)
 check("point without extensions still parses", pts[2][4], None)  # no speed
 
+# HAE carries the track inline on the workout. Shape copied from a real payload
+# (2026-10-21) — the ingest used to drop it, so post-backfill swims had no map.
+from importers.routes import hae_points, route_summary
+
+hae_route = [
+    {"speed": 0.0688, "course": 139.8, "altitude": 448.77, "latitude": 13.701357,
+     "longitude": -89.075888, "timestamp": "2026-10-17 08:05:34 -0500",
+     "speedAccuracy": 0.93, "horizontalAccuracy": 2.83},
+    {"latitude": 13.702357, "longitude": -89.075888,
+     "timestamp": "2026-10-17 08:06:34 -0500"},
+    {"latitude": None, "longitude": -89.0, "timestamp": "2026-10-17 08:07:34 -0500"},
+]
+hp = hae_points(hae_route)
+check("HAE route: fix without latitude skipped", len(hp), 2)
+check("HAE route: altitude -> ele", hp[0][3], 448.77, tol=1e-6)
+check("HAE route: speed kept", hp[0][4], 0.0688, tol=1e-6)
+check("HAE route: timestamp keeps its offset", hp[0][0].utcoffset().total_seconds(), -5 * 3600)
+check("HAE route: missing altitude is None", hp[1][3], None)
+check("HAE route: not a list -> no points", hae_points(None), [])
+rs = route_summary("w1", "hae", hp)
+check("route summary: point count", rs[2], 2)
+check("route summary: ~111m over 0.001 lat", rs[5], 111.2, tol=1.0)
+check("route summary: no points -> no row", route_summary("w1", "hae", []), None)
+
 # ------------------------------------------------- HAE ingest parse path --
 # Validated against a real Health Auto Export payload, so daily pushes populate
 # the canonical layer instead of silently dropping metrics.

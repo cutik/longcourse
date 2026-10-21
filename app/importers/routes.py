@@ -112,6 +112,68 @@ def parse_gpx(path: Path):
         elem.clear()
 
 
+def _num(v) -> float | None:
+    return float(v) if isinstance(v, (int, float)) else None
+
+
+def hae_points(route) -> list[tuple]:
+    """Health Auto Export's workout `route` array, as parse_gpx-shaped tuples.
+
+    Verified against a real payload (2026-10-21): each fix carries `latitude`,
+    `longitude`, `altitude`, `speed` and `timestamp`, plus course and accuracy
+    fields that are not kept. Before this the HAE ingest dropped routes
+    entirely, so nothing swum after the archive backfill reached the map.
+    """
+    out = []
+    for p in route if isinstance(route, list) else []:
+        if not isinstance(p, dict):
+            continue
+        lat, lon = _num(p.get("latitude")), _num(p.get("longitude"))
+        if lat is None or lon is None:
+            continue
+        out.append((parse_dt(p.get("timestamp")), lat, lon,
+                    _num(p.get("altitude")), _num(p.get("speed"))))
+    return out
+
+
+def route_summary(wid: str, source: str, points: list[tuple]) -> tuple | None:
+    """One workout_routes row, in ROUTE_COLS order, for a list of fixes."""
+    if not points:
+        return None
+    dist = sum(haversine(a[1:3], b[1:3]) for a, b in zip(points, points[1:]))
+    lats = [p[1] for p in points]
+    lons = [p[2] for p in points]
+    stamps = [p[0] for p in points if p[0]]
+    return (wid, source, len(points),
+            stamps[0] if stamps else None, stamps[-1] if stamps else None,
+            round(dist, 1), min(lats), max(lats), min(lons), max(lons),
+            sum(lats) / len(lats), sum(lons) / len(lons))
+
+
+def route_writers(conn) -> tuple[BatchWriter, BatchWriter]:
+    return (BatchWriter(conn, "route_points", POINT_COLS, conflict=("workout_id", "seq")),
+            BatchWriter(conn, "workout_routes", ROUTE_COLS, conflict=("workout_id",),
+                        update=[c for c in ROUTE_COLS if c != "workout_id"]))
+
+
+async def write_route(conn, pts: BatchWriter, routes: BatchWriter,
+                      wid: str, source: str, points: list[tuple]) -> int:
+    """Replace one workout's track. The parent workout row must already exist.
+
+    Upserts by (workout_id, seq), and drops any tail beyond the new length so a
+    track that comes back shorter leaves no stale fixes behind.
+    """
+    summary = route_summary(wid, source, points)
+    if summary is None:
+        return 0
+    await conn.execute("DELETE FROM route_points WHERE workout_id = %s AND seq >= %s",
+                       (wid, len(points)))
+    for seq, p in enumerate(points):
+        await pts.add((wid, seq, *p))
+    await routes.add(summary)
+    return len(points)
+
+
 async def import_routes(export: Path, routes_dir: Path, dsn: str) -> dict:
     print(f"reading route references from {export.name} …", flush=True)
     refs = workout_routes_from_export(export)
@@ -123,11 +185,7 @@ async def import_routes(export: Path, routes_dir: Path, dsn: str) -> dict:
         cur = await conn.execute("SELECT id, started_at FROM workouts")
         by_start = {int(ts.timestamp()): wid for wid, ts in await cur.fetchall()}
 
-        pts = BatchWriter(conn, "route_points", POINT_COLS,
-                          conflict=("workout_id", "seq"))
-        routes = BatchWriter(conn, "workout_routes", ROUTE_COLS,
-                             conflict=("workout_id",),
-                             update=[c for c in ROUTE_COLS if c != "workout_id"])
+        pts, routes = route_writers(conn)
 
         for epoch, fname in sorted(refs.items()):
             wid = by_start.get(epoch)
@@ -139,37 +197,12 @@ async def import_routes(export: Path, routes_dir: Path, dsn: str) -> dict:
                 stats["missing_file"] += 1
                 continue
 
-            seq = 0
-            prev = None
-            dist = 0.0
-            lo_lat = lo_lon = math.inf
-            hi_lat = hi_lon = -math.inf
-            first_ts = last_ts = None
-            sum_lat = sum_lon = 0.0
-
-            for ts, lat, lon, ele, speed in parse_gpx(gpx):
-                await pts.add((wid, seq, ts, lat, lon, ele, speed))
-                if prev is not None:
-                    dist += haversine(prev, (lat, lon))
-                prev = (lat, lon)
-                lo_lat, hi_lat = min(lo_lat, lat), max(hi_lat, lat)
-                lo_lon, hi_lon = min(lo_lon, lon), max(hi_lon, lon)
-                sum_lat += lat
-                sum_lon += lon
-                if ts:
-                    first_ts = first_ts or ts
-                    last_ts = ts
-                seq += 1
-
+            # A long run is ~20k fixes; holding one track in memory is fine.
+            seq = await write_route(conn, pts, routes, wid, fname, list(parse_gpx(gpx)))
             if seq == 0:
                 stats["empty"] += 1
                 continue
 
-            await routes.add((
-                wid, fname, seq, first_ts, last_ts, round(dist, 1),
-                lo_lat, hi_lat, lo_lon, hi_lon,
-                sum_lat / seq, sum_lon / seq,
-            ))
             stats["routes"] += 1
             stats["points"] += seq
             if stats["routes"] % 50 == 0:
@@ -187,15 +220,45 @@ async def import_routes(export: Path, routes_dir: Path, dsn: str) -> dict:
     return stats
 
 
+async def import_raw_routes(dsn: str) -> dict:
+    """Load tracks that HAE delivered but the ingest never wrote.
+
+    Every HAE workout keeps its full JSON in workouts.raw, route included, so
+    the gap before route ingest existed is recoverable without a re-export.
+    """
+    stats = {"routes": 0, "points": 0}
+    async with await psycopg.AsyncConnection.connect(dsn) as conn:
+        cur = await conn.execute(
+            "SELECT w.id, w.raw->'route' FROM workouts w "
+            "WHERE w.raw ? 'route' AND NOT EXISTS "
+            "  (SELECT 1 FROM workout_routes r WHERE r.workout_id = w.id)")
+        pts, routes = route_writers(conn)
+        for wid, route in await cur.fetchall():
+            n = await write_route(conn, pts, routes, wid, "hae", hae_points(route))
+            if n:
+                stats["routes"] += 1
+                stats["points"] += n
+        await pts.flush()
+        await routes.flush()
+        await conn.commit()
+    print(f"done: {stats}")
+    return stats
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Import GPX workout routes.")
-    ap.add_argument("export", type=Path, help="path to export.xml")
+    ap.add_argument("export", type=Path, nargs="?", help="path to export.xml")
     ap.add_argument("--routes-dir", type=Path, default=None,
                     help="folder of route_*.gpx (default: <export dir>/workout-routes)")
+    ap.add_argument("--from-raw", action="store_true",
+                    help="instead of GPX, load routes kept in HAE workouts' raw JSON")
     ap.add_argument("--dsn", default=DSN)
     args = ap.parse_args(argv)
 
-    if not args.export.exists():
+    if args.from_raw:
+        asyncio.run(import_raw_routes(args.dsn))
+        return 0
+    if not args.export or not args.export.exists():
         print(f"no such file: {args.export}", file=sys.stderr)
         return 1
     routes_dir = args.routes_dir or args.export.parent / "workout-routes"
