@@ -161,6 +161,10 @@ async def store(payload: dict, sha: str) -> dict:
             "ON CONFLICT (body_sha256) DO NOTHING",
             (sha, json.dumps(payload)),
         )
+        # Commit the archive on its own, so a parser failure below rolls back
+        # only the parsed rows. Before this, an exception took the raw body
+        # down with it and there was nothing left to replay.
+        await conn.commit()
 
         raw_m = BatchWriter(conn, "metrics", METRIC_COLS,
                             conflict=("name", "ts", "source"))
@@ -246,9 +250,14 @@ mcp = FastMCP("longcourse")
 
 
 async def q(sql: str, params: tuple = ()) -> list[dict]:
+    # The row factory goes on the cursor, not the connection. Setting it on a
+    # pooled connection outlives this call: the next /ingest that drew the same
+    # connection got dicts back, unpacked their keys as (id, started_at) and
+    # died on 'str' object has no attribute 'timestamp' — dropping every push
+    # that carried an already-known workout, once the watchdog polled /health.
     async with pool.connection() as conn:
-        conn.row_factory = dict_row
-        cur = await conn.execute(sql, params)
+        cur = conn.cursor(row_factory=dict_row)
+        await cur.execute(sql, params)
         return await cur.fetchall()
 
 

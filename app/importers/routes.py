@@ -1,7 +1,7 @@
 """
 GPX route importer.
 
-    docker exec addon_local_longcourse \
+    docker exec app_local_longcourse \
         python -m importers.routes /share/archive/apple_health_export/export.xml
     # or from a laptop against the LAN database:
     python -m importers.routes ~/Downloads/apple_health_export/export.xml --dsn ...

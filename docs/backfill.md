@@ -43,7 +43,7 @@ iOS versions also include `workout-routes/*.gpx`.
 ### 2. Look before loading
 
 ```bash
-docker exec addon_local_longcourse \
+docker exec app_local_longcourse \
   python -m importers.apple_xml --scan /share/archive/apple_health_export/export.xml
 ```
 
@@ -61,7 +61,7 @@ Add it to `app/canon.py` and re-run if it turns out to be wanted.
 ### 3. Import
 
 ```bash
-docker exec addon_local_longcourse \
+docker exec app_local_longcourse \
   python -m importers.apple_xml --import /share/archive/apple_health_export/export.xml
 ```
 
@@ -75,7 +75,7 @@ reuses the existing row's id. Without that one swim would become two.
 ### 4. Re-derive
 
 ```bash
-docker exec addon_local_longcourse python -m derive --all
+docker exec app_local_longcourse python -m derive --all
 ```
 
 This builds per-minute workout series from the standalone records the archive
@@ -120,7 +120,7 @@ The archive links each route to its workout directly — a `<Workout>` carries
 filename matching is needed.
 
 ```bash
-docker exec addon_local_longcourse \
+docker exec app_local_longcourse \
   python -m importers.routes /share/archive/apple_health_export/export.xml
 ```
 

@@ -1,8 +1,8 @@
 """
 Rebuild everything that is computed rather than measured.
 
-    docker exec addon_local_longcourse python -m derive --all
-    docker exec addon_local_longcourse python -m derive --since 2026-01-01
+    docker exec app_local_longcourse python -m derive --all
+    docker exec app_local_longcourse python -m derive --since 2026-01-01
 
 Why this is a separate job: derived columns used to be written only at ingest,
 so changing the SWOLF formula meant `TRUNCATE workouts CASCADE` followed by
