@@ -160,15 +160,6 @@ else:
     check("distance falls back to WorkoutStatistics", walk["distance_m"], 2400.0, tol=0.01)
     check("no lap events on a walk", len(walk["laps"]), 0)
 
-# --------------------------------------------------------------------------
-print()
-if failures:
-    print(f"{len(failures)} FAILED")
-    for f in failures:
-        print(f"  - {f}")
-    raise SystemExit(1)
-print("all checks passed")
-
 # ------------------------------------------------------------- gpx routes --
 print("\ngpx route parsing")
 from importers.routes import parse_gpx, haversine, _local
@@ -274,3 +265,49 @@ old_stages = {r[3]: (r[2] - r[1]).total_seconds() / 3600 for r in old_rows}
 check("stageless night falls back to one 'asleep' segment",
       list(old_stages), ["asleep"])
 check("fallback uses totalSleep hours", old_stages.get("asleep"), 6.5, tol=0.01)
+
+# ------------------------------------------------------------- HAE laps --
+# Since 2026-09 HAE sends per-length `laps`. Shape copied from a real 25 m swim.
+print("\nHAE lap splits")
+from swim import derive_swim, hae_laps
+
+lap_item = lambda i, s, e, dur: {
+    "index": i, "start": f"2026-10-10 18:{s} -0300", "end": f"2026-10-10 18:{e} -0300",
+    "activeDuration": dur, "elapsedDuration": dur, "boundaryKind": "interval",
+    "metrics": {"distance": {"qty": 25, "units": "m", "origin": "sampleOverlapEstimate"}}}
+hw = {"laps": [lap_item(1, "20:35", "20:53", 17.87), lap_item(2, "20:53", "21:17", 23.86),
+               {"index": 3, "start": "2026-10-10 18:22:00 -0300"}]}   # no duration
+hl = hae_laps(hw)
+check("laps: item without duration skipped", len(hl), 2)
+check("laps: activeDuration read", hl[0][2], 17.87, tol=1e-6)
+check("laps: distance in metres", hl[1][3], 25.0)
+check("laps: none -> empty", hae_laps({}), [])
+d = derive_swim(50.0, 300.0, 25.0, 40.0, [], lap_count=len(hl),
+                lap_total_s=sum(l[2] for l in hl))
+check("laps feed the measured path", d["swolf_method"], "lap")
+check("laps: moving time is the sum of lengths", d["moving_s"], 41.73, tol=1e-6)
+
+# ---------------------------------------------------------- local time --
+print("\nworkout timezones")
+from datetime import timedelta
+from localtime import PUSH_WINDOW, etc_zone, push_zone
+
+check("UTC-3 is Etc/GMT+3 (POSIX sign)", etc_zone(timedelta(hours=-3)), "Etc/GMT+3")
+check("UTC+3 is Etc/GMT-3", etc_zone(timedelta(hours=3)), "Etc/GMT-3")
+check("UTC is Etc/UTC", etc_zone(timedelta(0)), "Etc/UTC")
+check("half-hour offset has no Etc zone", etc_zone(timedelta(hours=5, minutes=30)), None)
+
+end = parse_dt("2026-10-17 12:26:35 -0500")
+check("timely push: its offset is trusted",
+      push_zone("2026-10-17 06:52:06 -0600", end, end + timedelta(hours=2)), "Etc/GMT+6")
+check("late push: phone may have moved, offset ignored",
+      push_zone("2026-10-17 07:52:06 -0500", end, end + PUSH_WINDOW + timedelta(hours=1)), None)
+
+# --------------------------------------------------------------------------
+print()
+if failures:
+    print(f"{len(failures)} FAILED")
+    for f in failures:
+        print(f"  - {f}")
+    raise SystemExit(1)
+print("all checks passed")

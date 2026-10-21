@@ -32,7 +32,9 @@ from canon import CANON, canonical, local_day, night_day, sleep_stage, to_canoni
 from db import BatchWriter, upsert_metric_meta
 from parse import kcal, parse_dt, pool_length_m, qty, to_meters
 from importers.routes import hae_points, route_writers, write_route
-from swim import SERIES_KEYS, classify, derive_swim
+import localtime
+from derive import inherit_sport_by_name
+from swim import SERIES_KEYS, classify, derive_swim, hae_laps
 from sleep import sleep_rows as _sleep_rows
 from settings import DSN, TOKEN, TZ
 
@@ -91,10 +93,15 @@ def workout_row(w: dict, wid_for_start: dict[int, str] | None = None) -> tuple |
     # Derived swim figures are computed at ingest so every consumer sees the
     # same numbers, and recomputed in bulk by derive.py when the formula
     # changes — that path no longer needs the original payload re-posted.
-    d = (derive_swim(distance_m, duration_s, lap, strokes, w.get("swimDistance") or [])
+    # Real per-length laps, when HAE sends them, win over the estimate.
+    laps = hae_laps(w) if sport == "swim" else []
+    d = (derive_swim(distance_m, duration_s, lap, strokes, w.get("swimDistance") or [],
+                     lap_count=len(laps) or None,
+                     lap_total_s=sum(l[2] for l in laps) or None)
          if sport == "swim" else
          {"lengths": None, "moving_s": None, "swolf": None, "swolf_gross": None,
           "pace_s_per_100m": None, "swolf_method": None})
+    lap = lap or d.get("pool_length_m")
 
     return (
         str(wid), PROVIDER_ROW, external_id,
@@ -137,6 +144,7 @@ METRIC_COLS = ("name", "ts", "source", "qty", "units", "extra", "provider")
 OBS_COLS = ("provider", "metric", "ts", "local_day", "value", "unit", "source")
 SLEEP_COLS = ("provider", "started_at", "ended_at", "stage", "source", "local_day")
 SAMPLE_COLS = ("workout_id", "metric", "ts", "qty", "units", "extra")
+LAP_COLS = ("workout_id", "idx", "started_at", "duration_s", "distance_m", "stroke_style")
 
 
 async def store(payload: dict, sha: str) -> dict:
@@ -177,6 +185,8 @@ async def store(payload: dict, sha: str) -> dict:
         samples = BatchWriter(conn, "workout_samples", SAMPLE_COLS,
                               conflict=("workout_id", "metric", "ts"))
         rpts, rsum = route_writers(conn)
+        laps = BatchWriter(conn, "workout_laps", LAP_COLS, conflict=("workout_id", "idx"))
+        pushed: list[tuple[str, str | None]] = []
 
         for m in data.get("metrics") or []:
             name, u = m.get("name"), m.get("units")
@@ -232,6 +242,9 @@ async def store(payload: dict, sha: str) -> dict:
             for sr in sample_rows(row[0], w):
                 await samples.add(sr)
                 counts["samples"] += 1
+            for idx, start, dur, dist in (hae_laps(w) if row[3] == "swim" else []):
+                await laps.add((row[0], idx, start, dur, dist, None))
+            pushed.append((row[0], w.get("start")))
 
             # The rolling window resends the same track every hour; rewrite it
             # only when the fix count changed.
@@ -245,8 +258,12 @@ async def store(payload: dict, sha: str) -> dict:
                     counts["route_points"] += await write_route(
                         conn, rpts, rsum, row[0], "hae", route)
 
-        for writer in (raw_m, obs, sleep, wk, samples, rpts, rsum):
+        for writer in (raw_m, obs, sleep, wk, samples, rpts, rsum, laps):
             await writer.flush()
+
+        if pushed:
+            await inherit_sport_by_name(conn)
+            await localtime.resolve(conn, pushed)
 
         await conn.execute(
             "INSERT INTO ingest_log (n_metrics,n_workouts,n_samples) VALUES (%s,%s,%s)",

@@ -99,8 +99,15 @@ silently produce wrong or empty results.
    So for those sessions lengths and active time are *counted*, and SWOLF is a
    measurement. `swolf_method` records which path produced a figure — `lap` or
    `estimated` — and the two must never be averaged or compared. The
-   top-quartile estimator still covers the ~55 swims with no lap events, and
-   remains the only option for anything arriving through HAE.
+   top-quartile estimator still covers the ~55 swims with no lap events.
+
+   **Changed again 2026-09: HAE now sends `laps` too** — one item per length
+   with `activeDuration` and `metrics.distance`, the same data as the archive's
+   lap events. The ingest writes them to `workout_laps` and derives `lap`;
+   `derive` lifts them out of `raw` for swims that arrived earlier. Some of
+   these swims arrive with laps but **no** `totalSwimmingStrokeCount` or stroke
+   series at all — pace is measured, SWOLF stays NULL. The estimator now only
+   covers HAE swims without laps.
 
    Still absent: `HKMetadataKeySwimmingStrokeStyle` is not present anywhere in
    the archive (0 entries), so there is no per-stroke breakdown.
@@ -158,9 +165,9 @@ time and is not a real stroke rate.
 ### Never compare SWOLF across pool lengths
 
 `pool_length_m` is a first-class column for this reason. A 25m course halves
-seconds-per-length at identical technique. There is exactly one 25m session in
-the history (genuine, not a watch misconfiguration) — it must stay out of
-trend comparisons. `swim_sessions` takes a `pool_length_m` filter; default to 50.
+seconds-per-length at identical technique. 25m sessions are genuine — one in
+the archive, and a run of them from 2026-09 while travelling (Buenos Aires) —
+and must stay out of 50m trend comparisons. `swim_sessions` takes a `pool_length_m` filter; default to 50.
 
 ## Schema
 
@@ -205,6 +212,18 @@ Everything upserts. HAE resends overlapping windows on every run.
 - **Days are cut in local time, not UTC.** At Kyiv's +03 it is the early-morning
   readings that UTC misfiles: 01:30 local is 22:30 UTC the previous day. Hence
   `local_day` columns and the database-level `timezone` setting.
+- **Kyiv calendar, but the place's clock is kept too.** The user travels;
+  `local_day` stays Kyiv for every chart, while `workouts.tz_name` /
+  `local_started_at` record the wall clock where the workout happened.
+  **HAE's offsets are the phone's zone at *export* time**, not at the event —
+  the same swim arrived as `06:52 -0600` and later `07:52 -0500` — so they are
+  trusted only from a push within 6h of the workout. `tz_source` ranks the
+  evidence: `healthkit` (HKTimeZone) > `gps` (route, tzfpy) > `push` > `nearby`.
+  See `app/localtime.py`.
+- **HAE carries no activity type**, and some walks arrive without `stepCount`,
+  so `classify()` returns `other`. `inherit_sport_by_name` then gives them the
+  sport their localised name already resolved to structurally (≥5 times,
+  unambiguous) — learned from the data, never a hard-coded string.
 - **Sleep is attributed to the morning you wake up on**, with the cut at 18:00
   local so afternoon naps stay on their own day.
 - **`swolf_method` says how a SWOLF was produced** — `lap` (counted) or
@@ -417,7 +436,7 @@ data volume the cost is negligible and a stale materialised view showing last
 week's numbers would be worse than a slower query.
 
 **The Swim dashboard defaults `pool_length_m` to 50 and this must stay.** There
-is one genuine 25m session in the history and it will wreck any trend it enters.
+are genuine 25m sessions in the history and they will wreck any trend they enter.
 
 ## Secrets
 

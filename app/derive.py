@@ -33,8 +33,9 @@ from datetime import datetime
 
 import psycopg
 
+import localtime
 from settings import DSN, TZ
-from swim import derive_swim
+from swim import derive_swim, hae_laps
 
 # Canonical observation -> the workout_samples metric name the rest of the code
 # already speaks. Keeping HAE's names here means session_detail, the estimator
@@ -87,6 +88,26 @@ async def fill_samples_from_observations(conn, since: datetime | None) -> int:
     return total
 
 
+async def fill_laps_from_raw(conn, since: datetime | None) -> int:
+    """Lift HAE's per-length `laps` out of workouts.raw into workout_laps.
+
+    Covers the swims that arrived before the ingest wrote laps itself. Only
+    workouts with no laps yet, so export.xml splits are never overwritten.
+    """
+    cur = await conn.execute(
+        "SELECT id, raw FROM workouts w WHERE sport = 'swim' AND raw ? 'laps'"
+        " AND (%s::timestamptz IS NULL OR started_at >= %s)"
+        " AND NOT EXISTS (SELECT 1 FROM workout_laps l WHERE l.workout_id = w.id)",
+        (since, since))
+    rows = [(wid, *lap, None) for wid, raw in await cur.fetchall() for lap in hae_laps(raw)]
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO workout_laps (workout_id, idx, started_at, duration_s,"
+            " distance_m, stroke_style) VALUES (%s,%s,%s,%s,%s,%s)"
+            " ON CONFLICT (workout_id, idx) DO NOTHING", rows)
+    return len(rows)
+
+
 async def rederive_workouts(conn, since: datetime | None) -> dict:
     """Recompute lengths / moving_s / swolf / pace for every swim."""
     cur = await conn.execute(
@@ -131,6 +152,29 @@ async def rederive_workouts(conn, since: datetime | None) -> dict:
     return stats
 
 
+async def inherit_sport_by_name(conn) -> int:
+    """Classify 'other' HAE workouts by what their name means in this data.
+
+    classify() reads structure, and some walks arrive with none of it: no
+    stepCount, no swim or running fields (four such since 2026-09). HAE carries
+    no activity type, so the only remaining signal is the localised name. It is
+    not matched against any hard-coded string — the meaning is learned from
+    this database: a name that structure already resolved to exactly one sport,
+    at least five times, passes that sport on. Language-agnostic, and a name
+    that is ambiguous or rare resolves nothing.
+    """
+    cur = await conn.execute(
+        """
+        UPDATE workouts w SET sport = m.sport, updated_at = now()
+        FROM (SELECT name_raw, MIN(sport) AS sport FROM workouts
+              WHERE sport <> 'other' AND name_raw IS NOT NULL
+              GROUP BY name_raw
+              HAVING COUNT(DISTINCT sport) = 1 AND COUNT(*) >= 5) m
+        WHERE w.sport = 'other' AND w.name_raw = m.name_raw
+        """)
+    return cur.rowcount or 0
+
+
 async def backfill_local_days(conn) -> int:
     """Populate local_day on rows written before the column existed."""
     cur = await conn.execute(
@@ -148,8 +192,17 @@ async def run(dsn: str, since: datetime | None) -> None:
         print("building workout series from observations …")
         await fill_samples_from_observations(conn, since)
 
+        print("lifting HAE lap splits out of raw …")
+        print(f"  {await fill_laps_from_raw(conn, since):,} laps")
+
         print("re-deriving swim figures …")
         stats = await rederive_workouts(conn, since)
+
+        print("classifying structureless workouts by name …")
+        print(f"  {await inherit_sport_by_name(conn):,} reclassified")
+
+        print("resolving workout timezones …")
+        print(f"  {await localtime.resolve(conn, history=True)}")
 
         await conn.commit()
 

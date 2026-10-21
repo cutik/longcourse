@@ -13,3 +13,7 @@ psycopg[binary,pool]==3.3.4
 # Streaming JSON parser. Needed so a multi-hundred-MB HAE export can be read
 # with constant memory instead of json.loads'ing the whole thing on a Pi.
 ijson==3.5.1
+
+# Offline point -> IANA timezone lookup for workout routes (app/localtime.py).
+# Ships a ~3 MB abi3 wheel for linux aarch64, no numpy.
+tzfpy==2.1.0

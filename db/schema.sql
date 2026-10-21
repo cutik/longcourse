@@ -180,6 +180,15 @@ UPDATE workouts SET swolf_method = 'estimated' WHERE swolf IS NOT NULL AND swolf
 
 ALTER TABLE workouts ADD COLUMN IF NOT EXISTS local_day DATE;
 
+-- Where the workout happened, in time. local_day above stays on Kyiv time so
+-- every chart shares one calendar; these keep the wall clock at the place of
+-- the workout. tz_source says how sure that is (healthkit > gps > push >
+-- nearby) — see app/localtime.py. HAE's own offsets are the phone's zone at
+-- export time and are not used directly.
+ALTER TABLE workouts ADD COLUMN IF NOT EXISTS tz_name TEXT;
+ALTER TABLE workouts ADD COLUMN IF NOT EXISTS tz_source TEXT;
+ALTER TABLE workouts ADD COLUMN IF NOT EXISTS local_started_at TIMESTAMP;
+
 CREATE UNIQUE INDEX IF NOT EXISTS workouts_provider_external_idx
     ON workouts (provider, external_id);
 CREATE INDEX IF NOT EXISTS workouts_local_day_idx ON workouts (local_day DESC);
