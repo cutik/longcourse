@@ -235,9 +235,9 @@ means truncating and re-POSTing a 122 MB file — which stopped being viable onc
 the full history was loaded. Recompute in place from data already in Postgres:
 
 ```bash
-docker exec addon_local_longcourse python -m derive --all
+docker exec app_local_longcourse python -m derive --all
 # or just the recent end
-docker exec addon_local_longcourse python -m derive --since 2026-01-01
+docker exec app_local_longcourse python -m derive --since 2026-01-01
 ```
 
 It is idempotent and reports how many sessions used real lap splits versus the

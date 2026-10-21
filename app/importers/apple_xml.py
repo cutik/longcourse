@@ -1,9 +1,9 @@
 """
 Native Apple Health export.xml importer.
 
-    docker exec addon_local_longcourse \
+    docker exec app_local_longcourse \
         python -m importers.apple_xml --scan   /share/archive/export.xml
-    docker exec addon_local_longcourse \
+    docker exec app_local_longcourse \
         python -m importers.apple_xml --import /share/archive/export.xml
 
 Why this exists alongside the HAE push path: Health Auto Export is the only way
