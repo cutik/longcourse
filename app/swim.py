@@ -9,7 +9,7 @@ obvious from the code and was expensive to arrive at.
 
 from __future__ import annotations
 
-from parse import parse_dt, qty
+from parse import parse_dt, qty, to_meters
 
 # Structural swim signals — present regardless of interface language.
 SWIM_KEYS = ("swimDistance", "swimStroke", "swimCadence",
@@ -34,6 +34,29 @@ def classify(w: dict) -> str:
     if "runningPower" in w or "runningSpeed" in w or "groundContactTime" in w:
         return "run"
     return "other"
+
+
+def hae_laps(w: dict) -> list[tuple]:
+    """Per-length splits from HAE's `laps`, as (idx, started_at, duration_s, distance_m).
+
+    HAE began sending these with the 2026-09 swims (verified against a real
+    payload, 2026-10-21): one item per length, `activeDuration` in seconds and
+    `metrics.distance` equal to the pool length. They are the same thing
+    export.xml's HKWorkoutEventTypeLap events are, so SWOLF from them is a
+    measurement, not the top-quartile estimate.
+    """
+    out = []
+    for i, lap in enumerate(w.get("laps") if isinstance(w.get("laps"), list) else []):
+        if not isinstance(lap, dict):
+            continue
+        start = parse_dt(lap.get("start"))
+        dur = lap.get("activeDuration", lap.get("elapsedDuration"))
+        if start is None or not isinstance(dur, (int, float)) or dur <= 0:
+            continue
+        dist = (lap.get("metrics") or {}).get("distance")
+        out.append((lap.get("index") or i + 1, start, float(dur),
+                    to_meters(dist) if isinstance(dist, dict) else None))
+    return out
 
 
 def moving_seconds(series: list[dict], total_distance_m: float | None) -> float | None:
