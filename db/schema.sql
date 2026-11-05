@@ -124,7 +124,8 @@ CREATE INDEX IF NOT EXISTS ingest_log_at_idx ON ingest_log (at DESC);
 --
 -- Provider model:
 --   apple   — HAE pushes and the native export.xml backfill
---   samsung — one-off CSV archive covering an earlier, non-overlapping period
+--   garmin  — Garmin Connect pull, from 2026-10-25 (see v3 below)
+--   samsung — planned CSV archive; abandoned, Samsung deleted the data
 -- ============================================================================
 
 -- Daily rollups must not split at UTC midnight. At Kyiv's +03 the readings that
@@ -192,6 +193,36 @@ ALTER TABLE workouts ADD COLUMN IF NOT EXISTS local_started_at TIMESTAMP;
 CREATE UNIQUE INDEX IF NOT EXISTS workouts_provider_external_idx
     ON workouts (provider, external_id);
 CREATE INDEX IF NOT EXISTS workouts_local_day_idx ON workouts (local_day DESC);
+
+-- ============================================================================
+-- v3 — Garmin as a second provider (2026-11)
+--
+-- Garmin is pulled from Garmin Connect directly (app/importers/garmin.py). The
+-- same Garmin data can ALSO arrive through Apple Health -> HAE, tagged
+-- provider='apple', source 'Connect' — it did for 2026-10-25..27, including
+-- one swim whose start matches the Garmin activity to the second. Nothing is
+-- deleted to resolve that; the views choose instead:
+--   * a workout duplicated across providers gets superseded_by set on the
+--     lower-priority copy, and every view hides superseded rows;
+--   * a daily metric or a night of sleep is taken from ONE provider per day,
+--     the highest-priority one that has data for that day.
+-- Flip the ranks in provider_priority to switch watches back.
+-- ============================================================================
+
+-- Which upstream a raw_payloads body came from. Everything before v3 was HAE;
+-- localtime.resolve(history=True) parses bodies as HAE and must skip the rest.
+ALTER TABLE raw_payloads ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'hae';
+ALTER TABLE ingest_log   ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'apple';
+CREATE INDEX IF NOT EXISTS ingest_log_provider_at_idx ON ingest_log (provider, at DESC);
+
+ALTER TABLE workouts ADD COLUMN IF NOT EXISTS superseded_by TEXT;
+
+CREATE TABLE IF NOT EXISTS provider_priority (
+    provider TEXT PRIMARY KEY,
+    rank     INTEGER NOT NULL           -- 1 wins
+);
+INSERT INTO provider_priority (provider, rank) VALUES ('garmin', 1), ('apple', 2)
+ON CONFLICT (provider) DO NOTHING;
 
 -- --------------------------------------------------------- metric metadata --
 -- Mirrors app/canon.py so SQL can join against it. The dictionary lives in code
@@ -316,11 +347,21 @@ instantaneous AS (
     FROM per_source p
     JOIN metric_meta m ON m.metric = p.metric AND m.kind = 'instantaneous'
     GROUP BY 1, 2, 3
+),
+-- One provider per (metric, day): the highest-ranked in provider_priority that
+-- has data that day. Garmin's own figures win over the copy of them Garmin
+-- Connect wrote into Apple Health, and over the iPhone's step count; metrics
+-- only the iPhone records (gait, walking asymmetry) still come from Apple.
+best AS (
+    SELECT DISTINCT ON (u.metric, u.local_day) u.*
+    FROM (SELECT * FROM cumulative UNION ALL SELECT * FROM instantaneous) u
+    LEFT JOIN provider_priority pp ON pp.provider = u.provider
+    ORDER BY u.metric, u.local_day, COALESCE(pp.rank, 999), u.provider
 )
 SELECT u.local_day AS time, u.provider, u.metric,
        mm.label, mm.unit, mm.kind,
        u.value, u.lo AS min, u.hi AS max, u.n AS samples, u.source
-FROM (SELECT * FROM cumulative UNION ALL SELECT * FROM instantaneous) u
+FROM best u
 JOIN metric_meta mm ON mm.metric = u.metric;
 
 -- All training, every sport, one row per session.
@@ -330,7 +371,8 @@ SELECT started_at AS time, id, provider, sport, is_indoor,
        duration_s, moving_s, distance_m,
        distance_m / NULLIF(duration_s, 0) * 3.6 AS avg_kmh,
        active_kcal, total_kcal, avg_hr, max_hr, hr_recovery
-FROM workouts;
+FROM workouts
+WHERE superseded_by IS NULL;
 
 -- Swim sessions. pool_length_m is exposed deliberately and every dashboard
 -- built on this must filter on it: SWOLF sums seconds and strokes per length,
@@ -349,9 +391,15 @@ SELECT started_at AS time, id, provider, is_indoor, pool_length_m,
        lengths, stroke_count,
        stroke_count / NULLIF(lengths, 0) AS strokes_per_length,
        swolf, swolf_gross, swolf_method, pace_s_per_100m,
-       avg_hr, max_hr, hr_recovery
+       avg_hr, max_hr, hr_recovery,
+       -- Predominant stroke by active lengths. Garmin labels every length;
+       -- Apple never did, so this is NULL for the whole Apple history.
+       (SELECT l.stroke_style FROM workout_laps l
+        WHERE l.workout_id = workouts.id AND l.stroke_style IS NOT NULL
+        GROUP BY l.stroke_style ORDER BY COUNT(*) DESC, l.stroke_style LIMIT 1)
+           AS stroke_style_main
 FROM workouts
-WHERE sport = 'swim';
+WHERE sport = 'swim' AND superseded_by IS NULL;
 
 -- One row per night, attributed to the morning you woke up on.
 --
@@ -376,6 +424,13 @@ night AS (
            COALESCE(SUM(secs) FILTER (WHERE stage = 'rem'), 0)    AS rem_s,
            COALESCE(SUM(secs) FILTER (WHERE stage = 'asleep'), 0) AS unspecified_s
     FROM seg GROUP BY 1, 2
+),
+-- One provider per night, by provider_priority — see v_daily_metrics.
+ranked AS (
+    SELECT DISTINCT ON (n.local_day) n.*
+    FROM night n
+    LEFT JOIN provider_priority pp ON pp.provider = n.provider
+    ORDER BY n.local_day, COALESCE(pp.rank, 999), n.provider
 )
 SELECT local_day AS time, provider,
        inbed_s, awake_s, core_s, deep_s, rem_s,
@@ -387,7 +442,7 @@ SELECT local_day AS time, provider,
             THEN (CASE WHEN (core_s + deep_s + rem_s) > 0
                        THEN core_s + deep_s + rem_s ELSE unspecified_s END) / inbed_s
        END AS efficiency
-FROM night;
+FROM ranked;
 
 -- Weekly volume per sport, for the training-load view.
 CREATE OR REPLACE VIEW v_training_load AS
@@ -401,6 +456,7 @@ SELECT date_trunc('week', COALESCE(local_day,
        SUM(active_kcal)                      AS kcal,
        AVG(avg_hr)                           AS avg_hr
 FROM workouts
+WHERE superseded_by IS NULL
 GROUP BY 1, 2;
 
 -- ============================================================================
@@ -450,7 +506,7 @@ SELECT rp.workout_id, rp.seq,
        COALESCE(w.local_day, (w.started_at AT TIME ZONE 'Europe/Kyiv')::date) AS day,
        EXTRACT(year FROM w.started_at)::int AS year
 FROM route_points rp
-JOIN workouts w ON w.id = rp.workout_id;
+JOIN workouts w ON w.id = rp.workout_id AND w.superseded_by IS NULL;
 
 -- One row per open-water swim that has a track: summary plus map centre.
 -- Open water = a swim not flagged indoor. These are the routes the Open Water
@@ -470,4 +526,4 @@ LEFT JOIN LATERAL (
     WHERE o.metric = 'water_temperature'
       AND o.ts BETWEEN w.started_at AND COALESCE(w.ended_at, w.started_at + interval '6 hours')
 ) wt ON TRUE
-WHERE w.sport = 'swim' AND w.is_indoor IS NOT TRUE;
+WHERE w.sport = 'swim' AND w.is_indoor IS NOT TRUE AND w.superseded_by IS NULL;

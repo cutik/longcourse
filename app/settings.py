@@ -36,3 +36,26 @@ TZ = opt("tz", "Europe/Kyiv")
 
 # Where large archives are dropped over Samba for backfill. Mapped share:rw.
 ARCHIVE_DIR = Path(opt("archive_dir", "/share/archive"))
+
+# Garmin Connect. Only refreshable tokens live here — the password is typed
+# once into `python -m importers.garmin --login` and never stored. /data is the
+# add-on's persistent volume; on a laptop the library's own default is used.
+GARMIN_TOKEN_DIR = opt("garmin_token_dir",
+                       "/data/garmin" if Path("/data").is_dir() else "~/.garminconnect")
+
+
+def flag(key: str, default: bool) -> bool:
+    """A boolean option. opt() cannot carry False — it treats falsy as unset."""
+    if key in OPTS:
+        return bool(OPTS[key])
+    env = os.getenv(key.upper())
+    return default if env is None else env.strip().lower() in ("1", "true", "yes", "on")
+
+
+# Each provider can be switched off without touching the other. Apple stays on
+# by default (the iPhone still feeds steps and gait through HAE); Garmin is
+# opt-in because it needs a one-off interactive login first.
+HAE_ENABLED = flag("hae_enabled", True)
+GARMIN_ENABLED = flag("garmin_enabled", False)
+GARMIN_POLL_MINUTES = int(opt("garmin_poll_minutes", 60))
+GARMIN_LOOKBACK_DAYS = int(opt("garmin_lookback_days", 3))

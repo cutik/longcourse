@@ -318,7 +318,10 @@ async def run_import(path: Path, dsn: str, tz: str, commit_every: int = 200_000)
         # same session in export.xml has no UUID at all. Matching on start time
         # is what keeps one swim from becoming two rows. Workout counts are in
         # the thousands, so the whole map fits in memory comfortably.
-        cur = await conn.execute("SELECT id, started_at FROM workouts")
+        # Apple rows only: Garmin's copy of a session shares its start second
+        # and must never be matched (see main.store).
+        cur = await conn.execute("SELECT id, started_at FROM workouts"
+                                 " WHERE provider = 'apple'")
         existing = {int(ts.timestamp()): wid for wid, ts in await cur.fetchall()}
         print(f"{len(existing):,} workouts already in the database", flush=True)
 

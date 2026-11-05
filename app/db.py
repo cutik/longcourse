@@ -19,6 +19,7 @@ an upsert, so re-running is free.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Iterable, Sequence
 
 BATCH = 5000
@@ -50,7 +51,13 @@ class BatchWriter:
         # source did provide. A non-null incoming value still wins.
         self.coalesce = set(coalesce or ())
         self.batch = batch
-        self.stage = f"stage_{table}"
+        # The staging table is a session-scoped TEMP table, and the server's
+        # pooled connections outlive one request — so it outlives one writer.
+        # HAE and the Garmin pull write `workouts` with different column sets;
+        # a shared name would hand the second one a staging table shaped for
+        # the first. The column set is part of the name for that reason.
+        sig = hashlib.md5(",".join(self.columns).encode()).hexdigest()[:8]
+        self.stage = f"stage_{table}_{sig}"
         self._rows: list[tuple] = []
         self._ready = False
         self.written = 0

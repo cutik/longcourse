@@ -96,6 +96,18 @@ CANON: dict[str, tuple[str, str, str]] = {
     "stair_ascent_speed":    (INSTANTANEOUS, "m/s",         "Stair ascent speed"),
     "stair_descent_speed":   (INSTANTANEOUS, "m/s",         "Stair descent speed"),
     "six_minute_walk":       (INSTANTANEOUS, "m",           "Six-minute walk distance"),
+
+    # Garmin. HRV is deliberately NOT hrv_sdnn: Garmin reports the overnight
+    # average of RMSSD, Apple the SDNN of short spot readings. Different
+    # statistics of different windows — the numbers are not on the same scale
+    # (Garmin's first night read 15 ms) and must never share a trend line.
+    "hrv_rmssd":             (INSTANTANEOUS, "ms",          "HRV (overnight RMSSD)"),
+    "body_battery_high":     (INSTANTANEOUS, "score",       "Body Battery (daily high)"),
+    "body_battery_low":      (INSTANTANEOUS, "score",       "Body Battery (daily low)"),
+    "stress_avg":            (INSTANTANEOUS, "score",       "Average stress"),
+    # Garmin counts vigorous minutes double; not the same thing as Apple's
+    # exercise_time, so it gets its own name.
+    "intensity_minutes":     (CUMULATIVE,    "min",         "Intensity minutes"),
 }
 
 # ------------------------------------------------------------------ aliases --
@@ -198,7 +210,29 @@ _HAE = {
     "six_minute_walking_test_distance":  "six_minute_walk",
 }
 
-ALIASES: dict[str, dict[str, str]] = {"apple": _APPLE, "hae": _HAE, "samsung": {}}
+# Garmin Connect daily summary fields (get_stats / HRV / sleep payloads), as the
+# importer flattens them. Verified against real payloads, 2026-11-05.
+_GARMIN = {
+    "totalsteps":                  "steps",
+    "totaldistancemeters":         "distance_walking",
+    "floorsascended":              "flights_climbed",
+    "activekilocalories":          "active_energy",
+    "bmrkilocalories":             "basal_energy",
+    "restingheartrate":            "resting_heart_rate",
+    "avgwakingrespirationvalue":   "respiratory_rate",
+    "averagespo2":                 "blood_oxygen",
+    "lastnightavg":                "hrv_rmssd",
+    "bodybatteryhighestvalue":     "body_battery_high",
+    "bodybatterylowestvalue":      "body_battery_low",
+    "averagestresslevel":          "stress_avg",
+    "intensityminutes":            "intensity_minutes",
+    "vo2maxvalue":                 "vo2max",
+    "weight":                      "weight",
+    "bodyfat":                     "body_fat",
+}
+
+ALIASES: dict[str, dict[str, str]] = {"apple": _APPLE, "hae": _HAE, "garmin": _GARMIN,
+                                      "samsung": {}}
 
 
 def canonical(dialect: str, raw_name: str) -> str | None:
@@ -361,6 +395,59 @@ def apple_sport(activity_type: str | None) -> str:
     if not activity_type:
         return "other"
     return _APPLE_SPORTS.get(activity_type.strip().lower(), "other")
+
+
+# Garmin activityType.typeKey -> (sport, is_indoor). typeKey is an English
+# identifier Garmin keeps stable across UI languages — unlike activityName and
+# the FIT sport_profile_name, which arrive localised ("Плавання в басейні").
+_GARMIN_SPORTS: dict[str, tuple[str, bool | None]] = {
+    "lap_swimming":          ("swim", True),
+    "open_water_swimming":   ("swim", False),
+    "swimming":              ("swim", None),
+    "running":               ("run", False),
+    "street_running":        ("run", False),
+    "trail_running":         ("run", False),
+    "track_running":         ("run", False),
+    "treadmill_running":     ("run", True),
+    "indoor_running":        ("run", True),
+    "walking":               ("walk", False),
+    "casual_walking":        ("walk", False),
+    "speed_walking":         ("walk", False),
+    "hiking":                ("walk", False),
+    "indoor_walking":        ("walk", True),
+    "cycling":               ("bike", False),
+    "road_biking":           ("bike", False),
+    "mountain_biking":       ("bike", False),
+    "gravel_cycling":        ("bike", False),
+    "indoor_cycling":        ("bike", True),
+    "virtual_ride":          ("bike", True),
+    "strength_training":     ("strength", True),
+    "hiit":                  ("cardio", True),
+    "indoor_cardio":         ("cardio", True),
+    "elliptical":            ("cardio", True),
+    "stair_climbing":        ("cardio", True),
+    "indoor_rowing":         ("cardio", True),
+    "yoga":                  ("mobility", True),
+    "pilates":               ("mobility", True),
+    "breathwork":            ("mobility", True),
+    "resort_skiing_snowboarding_ws": ("ski", False),
+    "resort_skiing":         ("ski", False),
+    "backcountry_skiing":    ("ski", False),
+    "apnea_diving":          ("dive", False),
+    "single_gas_diving":     ("dive", False),
+}
+
+
+def garmin_sport(type_key: str | None) -> tuple[str, bool | None]:
+    if not type_key:
+        return "other", None
+    return _GARMIN_SPORTS.get(type_key.strip().lower(), ("other", None))
+
+
+# Garmin sleepLevels.activityLevel -> stage. Checked against the night's own
+# totals (deep/light/rem/awake seconds) to the second. 'light' is Apple's
+# 'core' under another name, so the nightly views need no new branch.
+GARMIN_SLEEP_LEVELS = {0: "deep", 1: "core", 2: "rem", 3: "awake"}
 
 
 # --------------------------------------------------------------- local time --

@@ -44,6 +44,26 @@
         }
       },
       {
+        "name": "watch",
+        "label": "Watch (SWOLF/strokes)",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "${ds}"
+        },
+        "query": "SELECT DISTINCT provider FROM v_swim_sessions ORDER BY 1",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "sort": 1,
+        "current": {
+          "text": "garmin",
+          "value": "garmin",
+          "selected": true
+        }
+      },
+      {
         "name": "method",
         "label": "SWOLF method",
         "type": "query",
@@ -171,7 +191,7 @@
     {
       "type": "stat",
       "title": "Median SWOLF",
-      "description": "Seconds per length plus strokes per length. Only comparable within one pool length and one swolf_method.",
+      "description": "Seconds per length plus strokes per length. Only comparable within one pool length, one swolf_method and one watch.",
       "gridPos": {
         "x": 12,
         "y": 0,
@@ -186,7 +206,7 @@
         {
           "format": "table",
           "rawQuery": true,
-          "rawSql": "\nSELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY swolf) AS value\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n  AND swolf_method IN ($method)\n",
+          "rawSql": "\nSELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY swolf) AS value\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n  AND swolf_method IN ($method) AND provider = '$watch'\n",
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
@@ -373,7 +393,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "\nSELECT time, swolf AS \"swolf (active)\", swolf_gross AS \"swolf (incl. rest)\"\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n  AND swolf_method IN ($method)\nORDER BY 1\n",
+          "rawSql": "\nSELECT time, swolf AS \"swolf (active)\", swolf_gross AS \"swolf (incl. rest)\"\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n  AND swolf_method IN ($method) AND provider = '$watch'\nORDER BY 1\n",
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
@@ -398,7 +418,7 @@
     {
       "type": "timeseries",
       "title": "Strokes per length",
-      "description": "Apple Watch undercounts strokes — roughly 22-27 per 50 m against 30-40 counted by hand. The bias looks consistent, so the trend is usable but the absolute value is not.",
+      "description": "Both watches count fewer strokes than a hand count — roughly 22-27 per 50 m against 30-40. The bias looks consistent within one watch, so the trend is usable but the absolute value is not, and the two watches must not be compared.",
       "gridPos": {
         "x": 12,
         "y": 12,
@@ -413,7 +433,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "\nSELECT time, strokes_per_length AS \"strokes/length\"\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\nORDER BY 1\n",
+          "rawSql": "\nSELECT time, strokes_per_length AS \"strokes/length\"\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\n  AND provider = '$watch'\nORDER BY 1\n",
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
@@ -453,7 +473,7 @@
         {
           "format": "table",
           "rawQuery": true,
-          "rawSql": "\nSELECT time AS \"date\", distance_m AS \"m\", ROUND(duration_s/60) AS \"elapsed min\",\n       ROUND(moving_s/60) AS \"active min\", ROUND(active_ratio::numeric, 2) AS \"ratio\",\n       lengths, ROUND(strokes_per_length::numeric, 1) AS \"str/len\",\n       ROUND(swolf::numeric, 1) AS swolf, swolf_method AS \"method\",\n       ROUND(pace_s_per_100m::numeric) AS \"s/100m\", avg_hr, max_hr\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\nORDER BY time DESC\n",
+          "rawSql": "\nSELECT time AS \"date\", provider AS \"watch\", distance_m AS \"m\",\n       ROUND(duration_s/60) AS \"elapsed min\",\n       ROUND(moving_s/60) AS \"active min\", ROUND(active_ratio::numeric, 2) AS \"ratio\",\n       lengths, ROUND(strokes_per_length::numeric, 1) AS \"str/len\",\n       ROUND(swolf::numeric, 1) AS swolf, swolf_method AS \"method\",\n       ROUND(pace_s_per_100m::numeric) AS \"s/100m\", avg_hr, max_hr,\n       stroke_style_main AS \"main stroke\"\nFROM v_swim_sessions\nWHERE $__timeFilter(time) AND pool_length_m = $pool::float8\nORDER BY time DESC\n",
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",

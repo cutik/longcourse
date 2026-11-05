@@ -17,3 +17,15 @@ ijson==3.5.1
 # Offline point -> IANA timezone lookup for workout routes (app/localtime.py).
 # Ships a ~3 MB abi3 wheel for linux aarch64, no numpy.
 tzfpy==2.1.0
+
+# Garmin Connect (app/importers/garmin.py). Unofficial — Garmin has no personal
+# API — so pinned hard: a login-flow change upstream is exactly the kind of
+# thing an unpinned rebuild would pull in silently. 0.3.20 is the first release
+# that survives Garmin's 2026 auth changes (it dropped the dead `garth`) and
+# handles the 429 on first login. curl_cffi is its binary transport; pinned too,
+# it ships an abi3 aarch64 wheel.
+garminconnect==0.3.20
+curl_cffi==0.17.0
+
+# FIT decoding. Pure Python, no wheels to worry about.
+fitdecode==0.11.0

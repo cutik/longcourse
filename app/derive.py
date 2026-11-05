@@ -175,6 +175,52 @@ async def inherit_sport_by_name(conn) -> int:
     return cur.rowcount or 0
 
 
+async def mark_superseded(conn) -> int:
+    """Hide a workout recorded twice, once per provider, without deleting it.
+
+    Garmin Connect writes its activities into Apple Health, so the same swim can
+    arrive from the Garmin pull AND through HAE (provider 'apple', source
+    'Connect') — the 2026-10-26 swim did, with an identical start second. Two
+    rows of the same sport that overlap by at least 80% of the shorter one are
+    one session; the copy from the lower-ranked provider in provider_priority
+    gets superseded_by pointing at the other, and the views skip it.
+
+    Recomputed in full every run, so flipping provider_priority (switching
+    watches back) re-points or clears the flags with no other change. An Apple
+    row classified 'other' still matches: HAE sends some workouts with no
+    structural signal, and the overlap alone is evidence enough.
+    """
+    cur = await conn.execute(
+        """
+        WITH span AS (
+            SELECT w.id, w.provider, w.sport, w.started_at AS s,
+                   COALESCE(w.ended_at, w.started_at
+                            + make_interval(secs => COALESCE(w.duration_s, 0))) AS e,
+                   COALESCE(pp.rank, 999) AS rank
+            FROM workouts w LEFT JOIN provider_priority pp ON pp.provider = w.provider
+        ),
+        pairs AS (
+            SELECT lo.id, hi.id AS by,
+                   EXTRACT(epoch FROM LEAST(lo.e, hi.e) - GREATEST(lo.s, hi.s)) AS overlap,
+                   GREATEST(LEAST(EXTRACT(epoch FROM lo.e - lo.s),
+                                  EXTRACT(epoch FROM hi.e - hi.s)), 1) AS shorter
+            FROM span lo
+            JOIN span hi ON hi.provider <> lo.provider AND hi.rank < lo.rank
+                        AND (hi.sport = lo.sport OR lo.sport = 'other')
+                        AND hi.s < lo.e AND lo.s < hi.e
+        ),
+        want AS (
+            SELECT DISTINCT ON (id) id, by FROM pairs
+            WHERE overlap >= 0.8 * shorter
+            ORDER BY id, overlap DESC
+        )
+        UPDATE workouts w SET superseded_by = want.by, updated_at = now()
+        FROM (SELECT w2.id, want.by FROM workouts w2 LEFT JOIN want ON want.id = w2.id) want
+        WHERE w.id = want.id AND w.superseded_by IS DISTINCT FROM want.by
+        """)
+    return cur.rowcount or 0
+
+
 async def backfill_local_days(conn) -> int:
     """Populate local_day on rows written before the column existed."""
     cur = await conn.execute(
@@ -203,6 +249,9 @@ async def run(dsn: str, since: datetime | None) -> None:
 
         print("resolving workout timezones …")
         print(f"  {await localtime.resolve(conn, history=True)}")
+
+        print("marking cross-provider duplicates …")
+        print(f"  {await mark_superseded(conn):,} flags changed")
 
         await conn.commit()
 

@@ -139,12 +139,20 @@ def geomap(title: str, sql: str, x: int, y: int, w: int, h: int,
 # pool_length_m defaults to 50 on purpose. SWOLF sums seconds and strokes per
 # length, so the single genuine 25m session in the history is not comparable to
 # the rest and must not be allowed to sit inside a trend line.
+#
+# $watch does the same for the device. Apple Watch (to 2026-10-24) and Garmin
+# (since) count strokes differently, so SWOLF and strokes-per-length panels are
+# filtered to one provider. Pace and distance are not: both measure active time
+# from per-length splits, so those panels show the whole history.
 swim = dashboard(
     "longcourse-swim", "Longcourse · Swim",
     variables=[
         query_var("pool", "Pool length (m)",
                   "SELECT DISTINCT pool_length_m::text FROM v_swim_sessions "
                   "WHERE pool_length_m IS NOT NULL ORDER BY 1", current="50"),
+        query_var("watch", "Watch (SWOLF/strokes)",
+                  "SELECT DISTINCT provider FROM v_swim_sessions ORDER BY 1",
+                  current="garmin"),
         query_var("method", "SWOLF method",
                   "SELECT DISTINCT swolf_method FROM v_swim_sessions "
                   "WHERE swolf_method IS NOT NULL ORDER BY 1",
@@ -170,10 +178,10 @@ WHERE $__timeFilter(time) AND pool_length_m = $pool::float8
 SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY swolf) AS value
 FROM v_swim_sessions
 WHERE $__timeFilter(time) AND pool_length_m = $pool::float8
-  AND swolf_method IN ($method)
+  AND swolf_method IN ($method) AND provider = '$watch'
 """, 12, 0, 4, 4, fmt="table",
               desc="Seconds per length plus strokes per length. Only comparable "
-                   "within one pool length and one swolf_method."),
+                   "within one pool length, one swolf_method and one watch."),
         panel("stat", "Median active ratio", """
 SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY active_ratio) AS value
 FROM v_swim_sessions
@@ -209,7 +217,7 @@ ORDER BY 1
 SELECT time, swolf AS "swolf (active)", swolf_gross AS "swolf (incl. rest)"
 FROM v_swim_sessions
 WHERE $__timeFilter(time) AND pool_length_m = $pool::float8
-  AND swolf_method IN ($method)
+  AND swolf_method IN ($method) AND provider = '$watch'
 ORDER BY 1
 """, 0, 12, 12, 8,
               desc="The gap between the two is time spent standing at the wall. "
@@ -222,21 +230,25 @@ ORDER BY 1
 SELECT time, strokes_per_length AS "strokes/length"
 FROM v_swim_sessions
 WHERE $__timeFilter(time) AND pool_length_m = $pool::float8
+  AND provider = '$watch'
 ORDER BY 1
 """, 12, 12, 12, 8,
-              desc="Apple Watch undercounts strokes — roughly 22-27 per 50 m against "
-                   "30-40 counted by hand. The bias looks consistent, so the trend is "
-                   "usable but the absolute value is not.",
+              desc="Both watches count fewer strokes than a hand count — roughly "
+                   "22-27 per 50 m against 30-40. The bias looks consistent within one "
+                   "watch, so the trend is usable but the absolute value is not, and "
+                   "the two watches must not be compared.",
               extra={"fieldConfig": {"defaults": {"custom": {
                   "drawStyle": "line", "showPoints": "always", "lineWidth": 2,
                   "spanNulls": True}}, "overrides": []}}),
 
         panel("table", "Sessions", """
-SELECT time AS "date", distance_m AS "m", ROUND(duration_s/60) AS "elapsed min",
+SELECT time AS "date", provider AS "watch", distance_m AS "m",
+       ROUND(duration_s/60) AS "elapsed min",
        ROUND(moving_s/60) AS "active min", ROUND(active_ratio::numeric, 2) AS "ratio",
        lengths, ROUND(strokes_per_length::numeric, 1) AS "str/len",
        ROUND(swolf::numeric, 1) AS swolf, swolf_method AS "method",
-       ROUND(pace_s_per_100m::numeric) AS "s/100m", avg_hr, max_hr
+       ROUND(pace_s_per_100m::numeric) AS "s/100m", avg_hr, max_hr,
+       stroke_style_main AS "main stroke"
 FROM v_swim_sessions
 WHERE $__timeFilter(time) AND pool_length_m = $pool::float8
 ORDER BY time DESC
@@ -407,10 +419,17 @@ WHERE $__timeFilter(time) AND efficiency IS NOT NULL ORDER BY 1
 """, 16, 0, 8, 9, unit="percentunit",
               desc="Asleep over time in bed. Blank when no in-bed record exists."),
 
-        panel("timeseries", "HRV (SDNN)", """
-SELECT time, value AS hrv, min, max FROM v_daily_metrics
-WHERE $__timeFilter(time) AND metric = 'hrv_sdnn' ORDER BY 1
-""", 0, 9, 8, 8, unit="ms"),
+        panel("timeseries", "HRV", """
+SELECT time,
+       CASE WHEN metric = 'hrv_sdnn'  THEN value END AS "SDNN (Apple Watch)",
+       CASE WHEN metric = 'hrv_rmssd' THEN value END AS "overnight RMSSD (Garmin)"
+FROM v_daily_metrics
+WHERE $__timeFilter(time) AND metric IN ('hrv_sdnn', 'hrv_rmssd') ORDER BY 1
+""", 0, 9, 8, 8, unit="ms",
+              desc="Two different statistics, not one series: Apple's SDNN of spot "
+                   "readings to 2026-10-24, Garmin's overnight RMSSD after. Read "
+                   "each line's trend on its own; the level jump between them means "
+                   "nothing."),
 
         panel("timeseries", "Resting heart rate", """
 SELECT time, value AS rhr FROM v_daily_metrics
@@ -468,9 +487,12 @@ SELECT time, value AS kcal FROM v_daily_metrics
 WHERE $__timeFilter(time) AND metric = 'active_energy' ORDER BY 1
 """, x=12, y=9, w=12, h=8, unit="kcal"),
 
-        bars(title="Exercise minutes", sql="""
-SELECT time, value AS minutes FROM v_daily_metrics
-WHERE $__timeFilter(time) AND metric = 'exercise_time' ORDER BY 1
+        bars(title="Exercise / intensity minutes", sql="""
+SELECT time,
+       CASE WHEN metric = 'exercise_time'     THEN value END AS "exercise (Apple)",
+       CASE WHEN metric = 'intensity_minutes' THEN value END AS "intensity (Garmin)"
+FROM v_daily_metrics
+WHERE $__timeFilter(time) AND metric IN ('exercise_time', 'intensity_minutes') ORDER BY 1
 """, x=0, y=17, w=12, h=8, unit="m"),
 
         bars(title="Walking + running distance", sql="""

@@ -1,9 +1,13 @@
 # Longcourse ingest watchdog for Home Assistant.
 #
-# Alerts when Health Auto Export stops feeding the pipeline. iOS only runs HAE
-# while the phone is unlocked, so short gaps are normal and the alert is
-# deliberately slow: it fires only when data is stale for a sustained stretch,
-# not on a single missed push or a transient 500 from the add-on.
+# Alerts when the PRIMARY provider stops feeding the pipeline — Garmin when
+# `garmin_enabled` (the add-on pulls Garmin Connect hourly), else Health Auto
+# Export. /health's top-level age_hours is the primary's, so this file did not
+# need to change when Garmin arrived; per-provider ages are in the `providers`
+# attribute, and a failed Garmin pull shows up there as `garmin_error`.
+#
+# The alert is deliberately slow: it fires only when data is stale for a
+# sustained stretch, not on one missed round or a transient 500 from the add-on.
 #
 # Install: drop this file in `config/packages/` and make sure configuration.yaml
 # has:
@@ -35,6 +39,8 @@ rest:
           - last_ingest
           - last_metrics
           - last_workouts
+          - primary
+          - providers
 
 template:
   - binary_sensor:

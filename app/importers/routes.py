@@ -182,7 +182,10 @@ async def import_routes(export: Path, routes_dir: Path, dsn: str) -> dict:
     stats = {"routes": 0, "points": 0, "missing_file": 0, "unmatched": 0, "empty": 0}
 
     async with await psycopg.AsyncConnection.connect(dsn) as conn:
-        cur = await conn.execute("SELECT id, started_at FROM workouts")
+        # Apple rows only: Garmin's copy of a session shares its start second
+        # and must never be matched (see main.store).
+        cur = await conn.execute("SELECT id, started_at FROM workouts"
+                                 " WHERE provider = 'apple'")
         by_start = {int(ts.timestamp()): wid for wid, ts in await cur.fetchall()}
 
         pts, routes = route_writers(conn)

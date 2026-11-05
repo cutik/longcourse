@@ -1,7 +1,7 @@
 name: Longcourse
-version: "0.4.4"
+version: "0.5.0"
 slug: longcourse
-description: Apple Health ingest, normalisation and MCP server for swim coaching
+description: Apple Health + Garmin ingest, normalisation and MCP server for swim coaching
 arch:
   - aarch64
   - amd64
@@ -28,6 +28,16 @@ options:
   tz: Europe/Kyiv
   # Where large archives (export.xml, Samsung zip) are dropped over Samba.
   archive_dir: /share/archive
+  # Providers. Each can be switched off independently; the data already
+  # stored stays and the dashboards keep showing it.
+  hae_enabled: true
+  # Garmin needs a one-off login before enabling (see docs/garmin.md):
+  #   docker exec -it app_local_longcourse python -m importers.garmin --login
+  # No Garmin password is stored here — only refreshable tokens, in /data.
+  garmin_enabled: false
+  garmin_token_dir: /data/garmin
+  garmin_poll_minutes: 60
+  garmin_lookback_days: 3
 schema:
   db_host: str
   db_port: port
@@ -37,3 +47,8 @@ schema:
   ingest_token: password
   tz: str
   archive_dir: str
+  hae_enabled: bool
+  garmin_enabled: bool
+  garmin_token_dir: str
+  garmin_poll_minutes: int(15,1440)
+  garmin_lookback_days: int(1,30)
