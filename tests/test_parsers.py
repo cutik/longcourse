@@ -303,6 +303,86 @@ check("timely push: its offset is trusted",
 check("late push: phone may have moved, offset ignored",
       push_zone("2026-10-17 07:52:06 -0500", end, end + PUSH_WINDOW + timedelta(hours=1)), None)
 
+check("device offset +2 -> Etc/GMT-2",
+      __import__("localtime").device_zone("2026-11-02 07:10:17", "2026-11-02 05:10:17"),
+      "Etc/GMT-2")
+
+# ------------------------------------------------------------------ Garmin --
+# Shapes copied from real Garmin Connect payloads and a real pool-swim FIT
+# (2026-11-05). The FIT itself is not committed: it carries the user profile
+# and device serials. These dicts keep the fields the parser reads.
+print("\nGarmin")
+from canon import CANON, garmin_sport
+from importers.garmin import (Fit, active_lengths, daily_obs, fit_samples, sleep_rows,
+                              workout_row)
+
+check("typeKey lap_swimming -> pool swim", garmin_sport("lap_swimming"), ("swim", True))
+check("typeKey open_water_swimming -> outdoor swim",
+      garmin_sport("open_water_swimming"), ("swim", False))
+check("unknown typeKey -> other", garmin_sport("underwater_basket_weaving"), ("other", None))
+
+utc = timezone.utc
+L = lambda s, dur, kind, stroke=None, n=None: {
+    "start_time": datetime(2026, 11, 2, 5, 10, s, tzinfo=utc), "total_timer_time": dur,
+    "total_elapsed_time": dur, "length_type": kind, "swim_stroke": stroke, "total_strokes": n}
+fit = Fit(session={"pool_length": 50.0, "pool_length_unit": "metric", "total_strokes": 77,
+                   "total_distance": 150.0, "total_elapsed_time": 400.0,
+                   "avg_cadence": 22, "avg_heart_rate": 126},
+          lengths=[L(0, 3.4, "idle"), L(4, 62.6, "active", "freestyle", 26),
+                   L(7, 88.5, "active", "breaststroke", 25), L(9, 30.0, "idle"),
+                   L(11, 60.0, "active", "freestyle", 26)],
+          records=[{"timestamp": datetime(2026, 11, 2, 5, 10, s, tzinfo=utc), "heart_rate": hr}
+                   for s, hr in ((1, 100), (2, 110), (3, 120))])
+al = active_lengths(fit, 50.0)
+check("idle lengths are rest, not swimming", len(al), 3)
+check("active lengths numbered 1..n", [a[0] for a in al], [1, 2, 3])
+check("stroke style kept per length", [a[4] for a in al],
+      ["freestyle", "breaststroke", "freestyle"])
+hr = [r for r in fit_samples(fit) if r[0] == "heartRateData"]
+check("HR bucketed to one minute, averaged", (len(hr), hr[0][2]), (1, 110.0))
+
+act = {"activityId": 1, "activityType": {"typeKey": "lap_swimming"},
+       "startTimeGMT": "2026-11-02 05:10:17", "startTimeLocal": "2026-11-02 07:10:17",
+       "elapsedDuration": 400.0, "distance": 150.0, "calories": 100.0, "bmrCalories": 20.0,
+       "poolLength": 5000.0, "unitOfPoolLength": {"factor": 100.0}}
+row = workout_row(act, fit, "Europe/Kyiv")
+W = dict(zip(__import__("importers.garmin", fromlist=["WORKOUT_COLS"]).WORKOUT_COLS, row))
+check("garmin workout id is namespaced", W["id"], "garmin:1")
+check("pool length from FIT, metres", W["pool_length_m"], 50.0)
+check("measured from lengths", W["swolf_method"], "lap")
+check("moving time = active lengths only", W["moving_s"], 211.1, tol=1e-6)
+check("duration stays elapsed (rest included)", W["duration_s"], 400.0)
+check("active kcal = total - bmr", W["active_kcal"], 80.0)
+W2 = dict(zip(W, workout_row(act, None, "Europe/Kyiv")))
+check("summary poolLength is centimetres: 5000 -> 50 m", W2["pool_length_m"], 50.0)
+check("no FIT yet: no invented SWOLF", (W2["swolf"], W2["swolf_method"]), (None, None))
+
+obs = daily_obs("hrv", {"date": "2026-11-04"}, {"hrvSummary": {"lastNightAvg": 15}})
+check("Garmin HRV is RMSSD, never SDNN", [o[1] for o in obs], ["hrv_rmssd"])
+check("hrv_rmssd is a known canonical metric", "hrv_rmssd" in CANON, True)
+obs = {o[1]: o[4] for o in daily_obs("stats", {"date": "2026-11-04"},
+       {"totalSteps": 7692, "restingHeartRate": 66, "averageStressLevel": -1,
+        "moderateIntensityMinutes": 2, "vigorousIntensityMinutes": 4})}
+check("intensity minutes count vigorous double", obs.get("intensity_minutes"), 10.0)
+check("Garmin's -1 means no data, not a value", "stress_avg" in obs, False)
+check("daily summary lands on its calendar day",
+      daily_obs("stats", {"date": "2026-11-04"}, {"totalSteps": 1}, "Europe/Kyiv")[0][3],
+      datetime(2026, 11, 4).date())
+w = daily_obs("body_comp", {}, {"dateWeightList": [
+    {"date": 1793800000000, "weight": 103100.0, "bodyFat": None}]})
+check("Garmin weight is grams", w[0][4], 103.1, tol=1e-6)
+
+sl = sleep_rows({"dailySleepDTO": {"sleepStartTimestampGMT": 1793741873000,
+                                   "sleepEndTimestampGMT": 1793768153000},
+                 "sleepLevels": [
+                     {"startGMT": "2026-11-03T21:37:53.0", "endGMT": "2026-11-03T21:41:53.0",
+                      "activityLevel": 1.0},
+                     {"startGMT": "2026-11-03T21:41:53.0", "endGMT": "2026-11-03T22:55:53.0",
+                      "activityLevel": 0.0}]}, "Europe/Kyiv")
+check("sleep levels: light -> core, 0 -> deep, plus in-bed",
+      [r[3] for r in sl], ["inbed", "core", "deep"])
+check("night filed on the wake-up day", {r[5] for r in sl}, {datetime(2026, 11, 4).date()})
+
 # --------------------------------------------------------------------------
 print()
 if failures:

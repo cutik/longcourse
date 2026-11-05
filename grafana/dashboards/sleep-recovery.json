@@ -104,8 +104,8 @@
     },
     {
       "type": "timeseries",
-      "title": "HRV (SDNN)",
-      "description": "",
+      "title": "HRV",
+      "description": "Two different statistics, not one series: Apple's SDNN of spot readings to 2026-10-24, Garmin's overnight RMSSD after. Read each line's trend on its own; the level jump between them means nothing.",
       "gridPos": {
         "x": 0,
         "y": 9,
@@ -120,7 +120,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "\nSELECT time, value AS hrv, min, max FROM v_daily_metrics\nWHERE $__timeFilter(time) AND metric = 'hrv_sdnn' ORDER BY 1\n",
+          "rawSql": "\nSELECT time,\n       CASE WHEN metric = 'hrv_sdnn'  THEN value END AS \"SDNN (Apple Watch)\",\n       CASE WHEN metric = 'hrv_rmssd' THEN value END AS \"overnight RMSSD (Garmin)\"\nFROM v_daily_metrics\nWHERE $__timeFilter(time) AND metric IN ('hrv_sdnn', 'hrv_rmssd') ORDER BY 1\n",
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",

@@ -6,12 +6,14 @@ code alone.
 
 ## What this is
 
-A personal swimming coach pipeline. Apple Health → Postgres → MCP, so an agent
-can analyse training history and eventually write training plans. Replaces a
+A personal swimming coach pipeline. Apple Health and Garmin Connect → Postgres
+→ MCP, so an agent can analyse training history and eventually write training
+plans. Replaces a
 paid service (athletedata.health, $69/yr) whose swim support was thin anyway.
 
 The user swims in a **50m pool** (long course — hence the name). Roughly 2km
-per session, 2-3 times a week, tracked on Apple Watch.
+per session, 2-3 times a week. Tracked on **Apple Watch until 2026-10-24, on a
+Garmin since 2026-10-25.** Both providers stay wired in (see "Two providers").
 
 ## Topology
 
@@ -28,6 +30,8 @@ Everything runs at home. Nothing is rented.
   bought nothing.
 - **One container, one process.** FastAPI serves `/ingest` and `/health`;
   FastMCP is mounted at `/mcp` on the same port (8000 inside, 8787 on the host).
+  With `garmin_enabled`, a background task in the same process pulls Garmin
+  Connect every hour (`app/importers/garmin.py`, runbook `docs/garmin.md`).
 - **Cloudflare Tunnel** was already set up for `cutik.info` → Home Assistant.
   This added `lc.cutik.info` → the longcourse add-on on the same tunnel.
   **Point the tunnel ingress at the host port `http://192.168.50.221:8787`, not
@@ -135,6 +139,17 @@ silently produce wrong or empty results.
    the stages when present and falls back to the total only when they are absent,
    so a night is never counted twice.
 
+8. **Garmin has its own traps (verified 2026-11-05, details in
+   `docs/garmin.md`).** The activity summary's `poolLength` is **centimetres**
+   (`5000.0`) — the FIT's `pool_length` is metres and is the one used. The
+   Garmin *profile* timezone is wrong (`Europe/Paris`; readings carry Kyiv's
+   +2), so workout zones come from `startTimeLocal − startTimeGMT`
+   (`tz_source='device'`). HRV is overnight **RMSSD** → `hrv_rmssd`, never
+   `hrv_sdnn`. Sleep `activityLevel` 0/1/2/3 = deep/light/rem/awake, light →
+   `core`. FIT `length` messages are per length with `stroke_style`; `idle`
+   lengths are rests. A length is only as good as the lap button — an unmarked
+   rest folds into the next active length.
+
 ### Active time and why SWOLF is an estimate
 
 `duration_s` includes rest at the wall. Raw SWOLF over elapsed time measures
@@ -162,6 +177,14 @@ appears consistent, so the metric is fine for tracking change over time, but
 elsewhere**. Reported `swimCadence` (~19/min) is likewise computed over elapsed
 time and is not a real stroke rate.
 
+### Never compare SWOLF or strokes across watches
+
+Same rule, other axis. Apple Watch and Garmin count strokes with different
+algorithms; a SWOLF jump on 2026-10-25 is the device changing, not the
+swimmer. The Swim dashboard's *Watch* variable (default `garmin`) gates the
+SWOLF and strokes panels; `swim_sessions` takes `provider`. **Pace is
+comparable** — both measure active time from per-length splits.
+
 ### Never compare SWOLF across pool lengths
 
 `pool_length_m` is a first-class column for this reason. A 25m course halves
@@ -188,7 +211,11 @@ truth — this is what made three parser rewrites cheap.
   `HKWorkoutEventTypeLap` (see "Per-length splits" below)
 - `workout_routes` / `route_points` — GPX geometry: one summary row per route,
   one row per GPS fix. Filled by `app/importers/routes.py`
-- `ingest_log` — feeds `/health` and the HA watchdog
+- `ingest_log` — feeds `/health` and the HA watchdog; `provider` column
+  (`apple`, `garmin`, and `garmin_error` for a failed pull)
+- `raw_payloads.kind` — `hae` or `garmin`. Garmin JSON responses are archived
+  here as `{endpoint, params, data}`; FIT files go to `/share/archive/garmin/fit`
+  and `raw_files`. `--replay` rebuilds all Garmin rows from these alone
 
 **Canonical**
 
@@ -228,6 +255,26 @@ Everything upserts. HAE resends overlapping windows on every run.
   local so afternoon naps stay on their own day.
 - **`swolf_method` says how a SWOLF was produced** — `lap` (counted) or
   `estimated` (top-quartile model). Never average across the two.
+
+### Two providers
+
+Garmin data reaches the database twice: from the direct pull (`provider
+'garmin'`), and via Garmin Connect → Apple Health → HAE, landing as `provider
+'apple'` with source `Connect`. That second path worked 2026-10-25..27 and then
+stopped, but nothing guarantees it stays dead. Resolved in the views, never by
+deleting:
+
+- **Workouts:** `derive.mark_superseded` sets `superseded_by` on the
+  lower-priority copy when two rows of one sport overlap ≥80%. Every view and
+  MCP query filters `superseded_by IS NULL`. Recomputed in full each run.
+- **Daily metrics and sleep:** one provider per (metric, day), the best-ranked
+  in `provider_priority` (garmin 1, apple 2) with data that day. iPhone-only
+  metrics (gait, walking asymmetry) still come from Apple.
+- **Start-time matching is Apple-only.** HAE and `export.xml` match a session
+  to an existing row by start second. Garmin's copy has the *same* second, so
+  those lookups filter `provider = 'apple'` — without that, an HAE push
+  overwrote the Garmin row with poorer data.
+- Switching watches back is a `provider_priority` update; see `docs/garmin.md`.
 
 ## Development workflow
 
@@ -294,7 +341,11 @@ regression. Group by `swolf_method`; never compare a `lap` figure to an
 
 The server exposes **questions, not tables**. Six tools: `sync_status`,
 `swim_sessions`, `session_detail`, `recovery_window`, `compare_blocks`,
-`css_inputs`. Each returns small, pre-aggregated payloads.
+`css_inputs`. Each returns small, pre-aggregated payloads. Garmin brought only
+the minimum: `swim_sessions` takes `provider`, `session_detail` returns the
+per-length splits, `sync_status` reports per provider. `recovery_window` still
+reads the raw HAE `metrics` table, so it sees no Garmin data — left as is
+under the MCP deferral.
 
 **Do not add a generic `run_sql` tool.** It looks flexible but moves
 aggregation into the context window, where it is most expensive, and lets the
@@ -313,6 +364,13 @@ behind an email-login Access policy — fine for a browser, not for a headless
 client. Revisit if remote agent access is wanted.
 
 ## Status
+
+**Garmin added 2026-11-05 (v0.5.0)**: direct Garmin Connect pull, dedup across
+providers, Swim dashboard *Watch* variable, Garmin HRV and intensity minutes on
+the dashboards. Verified against a throwaway Postgres 17 with real data: two
+Garmin pool swims (40 and 45 lengths, `lap`), the HAE copy of 2026-10-26
+superseded, all 45 dashboard queries run. **Deploy, `--login`, backfill and
+`garmin_enabled: true` are the remaining manual steps** — `docs/garmin.md`.
 
 Working end to end. Full-history backfill and normalisation done 2026-08-25;
 Grafana dashboards imported and live 2026-08-26.

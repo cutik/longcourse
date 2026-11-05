@@ -15,6 +15,11 @@ soon after the workout.
 Sources, best first. A better one always replaces a worse one, never the reverse:
 
   healthkit  HKTimeZone in export.xml workout metadata — Apple's own record
+  device     the offset the watch itself recorded at the event: Garmin's
+             startTimeLocal − startTimeGMT. As good as HKTimeZone for the
+             instant, but only an offset, so it becomes a fixed Etc/GMT zone.
+             (Garmin's *profile* timezone is not used: this account's says
+             Europe/Paris while every reading carries Kyiv's +2.)
   gps        the zone at the first route fix (tzfpy, offline lookup)
   push       the offset of an HAE push that arrived within PUSH_WINDOW of the
              workout's end, as a fixed Etc/GMT zone
@@ -29,7 +34,7 @@ from datetime import datetime, timedelta
 
 from parse import parse_dt
 
-RANK = {None: 0, "nearby": 1, "push": 2, "gps": 3, "healthkit": 4}
+RANK = {None: 0, "nearby": 1, "push": 2, "gps": 3, "device": 4, "healthkit": 5}
 PUSH_WINDOW = timedelta(hours=6)
 NEARBY_WINDOW = timedelta(hours=12)
 
@@ -51,6 +56,20 @@ def etc_zone(offset: timedelta | None) -> str | None:
     return "Etc/UTC" if h == 0 else f"Etc/GMT{'+' if h < 0 else '-'}{abs(h)}"
 
 
+def device_zone(local: str | None, gmt: str | None) -> str | None:
+    """Garmin's pair of naive timestamps for one instant -> a fixed zone.
+
+    Rounded to the nearest quarter hour first: the two strings are the same
+    instant, but a stray second would otherwise make a whole-hour offset look
+    fractional and lose the zone.
+    """
+    a, b = parse_dt(local), parse_dt(gmt)
+    if a is None or b is None:
+        return None
+    secs = round((a - b).total_seconds() / 900) * 900
+    return etc_zone(timedelta(seconds=secs))
+
+
 def zone_at(lat: float, lon: float) -> str | None:
     return _get_tz(lon, lat) if _get_tz else None
 
@@ -64,18 +83,21 @@ def push_zone(start: str | None, ended_at: datetime | None,
     return etc_zone(ts.utcoffset())
 
 
+# RANK as SQL, so the comparison in _apply cannot drift from the dict.
+_RANK_SQL = ("(CASE tz_source "
+             + " ".join(f"WHEN '{k}' THEN {v}" for k, v in RANK.items() if k)
+             + " ELSE 0 END)")
+
+
 async def _apply(conn, valid: set[str], updates: list[tuple[str, str, str]]) -> int:
     """Write (workout_id, tz_name, source) where it outranks what is stored."""
-    rows = [(tz, src, wid, src) for wid, tz, src in updates if tz in valid]
+    rows = [(tz, src, wid, RANK[src]) for wid, tz, src in updates if tz in valid]
     if not rows:
         return 0
     async with conn.cursor() as c:
         await c.executemany(
-            "UPDATE workouts SET tz_name = %s, tz_source = %s WHERE id = %s"
-            " AND (CASE tz_source WHEN 'healthkit' THEN 4 WHEN 'gps' THEN 3"
-            "      WHEN 'push' THEN 2 WHEN 'nearby' THEN 1 ELSE 0 END)"
-            "   < (CASE %s WHEN 'healthkit' THEN 4 WHEN 'gps' THEN 3"
-            "      WHEN 'push' THEN 2 WHEN 'nearby' THEN 1 ELSE 0 END)",
+            f"UPDATE workouts SET tz_name = %s, tz_source = %s WHERE id = %s"
+            f" AND {_RANK_SQL} < %s",
             rows)
     return len(rows)
 
@@ -99,6 +121,14 @@ async def resolve(conn, pushed: list[tuple[str, str | None]] | None = None,
     stats["healthkit"] = await _apply(
         conn, valid, [(wid, tz, "healthkit") for wid, tz in await cur.fetchall()])
 
+    cur = await conn.execute(
+        "SELECT id, raw->>'startTimeLocal', raw->>'startTimeGMT' FROM workouts"
+        " WHERE provider = 'garmin' AND raw ? 'startTimeLocal'"
+        "   AND tz_source IS DISTINCT FROM 'device'")
+    stats["device"] = await _apply(
+        conn, valid, [(wid, device_zone(loc, gmt), "device")
+                      for wid, loc, gmt in await cur.fetchall()])
+
     if _get_tz:
         cur = await conn.execute(
             "SELECT w.id, rp.lat, rp.lon FROM workouts w"
@@ -117,7 +147,8 @@ async def resolve(conn, pushed: list[tuple[str, str | None]] | None = None,
             FROM (SELECT w->>'id' AS hid, w->>'start' AS start, p.received_at
                   FROM raw_payloads p,
                        jsonb_array_elements(COALESCE(p.body->'data'->'workouts',
-                                                     p.body->'workouts')) w) x
+                                                     p.body->'workouts')) w
+                  WHERE p.kind = 'hae') x
             JOIN workouts wk ON wk.external_id = x.hid AND wk.tz_source IS NULL
             ORDER BY x.hid, x.received_at
             """)
@@ -140,7 +171,7 @@ async def resolve(conn, pushed: list[tuple[str, str | None]] | None = None,
         UPDATE workouts w SET tz_name = s.tz, tz_source = 'nearby'
         FROM (SELECT w2.id,
                      (SELECT k.tz_name FROM workouts k
-                      WHERE k.tz_source IN ('healthkit', 'gps')
+                      WHERE k.tz_source IN ('healthkit', 'device', 'gps')
                         AND k.started_at BETWEEN w2.started_at - %(win)s
                                              AND w2.started_at + %(win)s
                       ORDER BY abs(extract(epoch FROM k.started_at - w2.started_at))

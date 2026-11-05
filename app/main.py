@@ -6,6 +6,9 @@ Routes:
   GET  /health   freshness probe for the Home Assistant watchdog sensor
   ANY  /mcp      MCP over HTTP for Claude Code / claude.ai
 
+Background: when `garmin_enabled`, a loop pulls Garmin Connect every
+`garmin_poll_minutes` (importers/garmin.py). Same process, no cron.
+
 Invariants:
   1. The raw body is archived before anything is parsed. If the parser is wrong
      (and it has been), we replay instead of losing data.
@@ -16,6 +19,7 @@ Invariants:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
@@ -33,10 +37,11 @@ from db import BatchWriter, upsert_metric_meta
 from parse import kcal, parse_dt, pool_length_m, qty, to_meters
 from importers.routes import hae_points, route_writers, write_route
 import localtime
-from derive import inherit_sport_by_name
+from derive import inherit_sport_by_name, mark_superseded
 from swim import SERIES_KEYS, classify, derive_swim, hae_laps
 from sleep import sleep_rows as _sleep_rows
-from settings import DSN, TOKEN, TZ
+from settings import (DSN, GARMIN_ENABLED, GARMIN_LOOKBACK_DAYS, GARMIN_POLL_MINUTES,
+                      HAE_ENABLED, TOKEN, TZ)
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 
@@ -223,8 +228,13 @@ async def store(payload: dict, sha: str) -> dict:
             # no HealthKit UUID to match on; start time is the only shared key.
             starts = [int(t.timestamp()) for t in
                       (parse_dt(w.get("start")) for w in workouts) if t]
+            # Apple rows only. Garmin's copy of a session has the same start to
+            # the second (Garmin Connect writes it into Apple Health), and
+            # matching it here would overwrite the Garmin row with HAE's
+            # poorer data. Cross-provider duplicates are mark_superseded's job.
             cur = await conn.execute(
-                "SELECT id, started_at FROM workouts WHERE started_at = ANY("
+                "SELECT id, started_at FROM workouts WHERE provider = 'apple'"
+                " AND started_at = ANY("
                 " SELECT to_timestamp(x) FROM unnest(%s::bigint[]) AS x)", (starts,))
             by_start = {int(ts.timestamp()): wid for wid, ts in await cur.fetchall()}
         else:
@@ -264,6 +274,9 @@ async def store(payload: dict, sha: str) -> dict:
         if pushed:
             await inherit_sport_by_name(conn)
             await localtime.resolve(conn, pushed)
+            # Garmin Connect writes its activities into Apple Health, so a push
+            # can carry a session the Garmin pull already has.
+            await mark_superseded(conn)
 
         await conn.execute(
             "INSERT INTO ingest_log (n_metrics,n_workouts,n_samples) VALUES (%s,%s,%s)",
@@ -297,26 +310,47 @@ def _r(rows: list[dict], nd: int = 1) -> list[dict]:
             for row in rows]
 
 
+async def freshness() -> dict:
+    """Last ingest per provider, plus which provider is primary.
+
+    Primary is Garmin when its pull is enabled, else Apple — the watchdog and
+    sync_status judge staleness on the primary, since a quiet secondary (HAE
+    still pushing iPhone steps, say) is not a broken pipeline.
+    """
+    rows = await q("SELECT DISTINCT ON (provider) provider, at, n_metrics, n_workouts, note"
+                   " FROM ingest_log ORDER BY provider, at DESC")
+    now = datetime.now().astimezone()
+    providers = {r["provider"]: {
+        "last_ingest": r["at"].isoformat(),
+        "age_hours": round((now - r["at"]).total_seconds() / 3600, 1),
+        "last_metrics": r["n_metrics"], "last_workouts": r["n_workouts"],
+        **({"note": r["note"]} if r["note"] else {}),
+    } for r in rows}
+    primary = "garmin" if GARMIN_ENABLED else "apple"
+    return {"primary": primary, "providers": providers,
+            "enabled": {"apple": HAE_ENABLED, "garmin": GARMIN_ENABLED}}
+
+
 @mcp.tool()
 async def sync_status() -> dict:
-    """Check whether the iPhone to database pipeline is alive and how fresh the data is.
+    """Check whether the data pipeline is alive and how fresh each source is.
 
-    Call this first if other tools return suspiciously empty results. iOS only
-    lets Health Auto Export run while the phone is unlocked, so gaps of a few
-    hours are normal; gaps of days mean the automation stopped.
+    Two providers: 'garmin' (pulled from Garmin Connect hourly by the server)
+    and 'apple' (pushed by Health Auto Export from the iPhone — since the move
+    to Garmin this mostly carries iPhone steps and gait). Status is judged on
+    the primary. Call this first if other tools return suspiciously empty
+    results.
     """
-    rows = await q("SELECT at, n_metrics, n_workouts FROM ingest_log ORDER BY at DESC LIMIT 1")
-    if not rows:
-        return {"status": "never_synced"}
-    last = rows[0]["at"]
-    age = (datetime.now(last.tzinfo) - last).total_seconds() / 3600
-    return {"last_ingest": last.isoformat(), "age_hours": round(age, 1),
-            "status": "ok" if age < 12 else "stale"}
+    f = await freshness()
+    p = f["providers"].get(f["primary"])
+    if not p:
+        return {**f, "status": "never_synced"}
+    return {**f, "status": "ok" if p["age_hours"] < 12 else "stale"}
 
 
 @mcp.tool()
 async def swim_sessions(since_days: int = 28, pool_length_m: float | None = None,
-                        indoor_only: bool = True) -> list[dict]:
+                        indoor_only: bool = True, provider: str | None = None) -> list[dict]:
     """List swim sessions with pace and efficiency, newest first.
 
     SWOLF here excludes rest between sets, so interval and steady sessions are
@@ -326,36 +360,44 @@ async def swim_sessions(since_days: int = 28, pool_length_m: float | None = None
     Filter by pool_length_m before comparing SWOLF across sessions: it sums
     strokes and seconds per length, so a 50m course yields structurally
     different numbers than 25m even when technique is unchanged.
+
+    Likewise never compare SWOLF or strokes across `provider`: Apple Watch
+    (history to 2026-10-24) and Garmin (since) count strokes differently.
+    Pace is comparable — both measure active time from per-length splits.
     """
     return _r(await q(
         """
-        SELECT id, started_at::date AS day, distance_m, duration_s, moving_s,
+        SELECT id, provider, started_at::date AS day, distance_m, duration_s, moving_s,
                pool_length_m, lengths, stroke_count, swim_cadence,
-               swolf, swolf_gross, pace_s_per_100m, avg_hr, max_hr, hr_recovery
+               swolf, swolf_gross, swolf_method, pace_s_per_100m, avg_hr, max_hr, hr_recovery
         FROM workouts
-        WHERE sport = 'swim'
+        WHERE sport = 'swim' AND superseded_by IS NULL
           AND started_at >= now() - make_interval(days => %s)
           AND (%s::boolean IS NOT TRUE OR is_indoor IS TRUE)
           AND (%s::float8 IS NULL OR pool_length_m = %s)
+          AND (%s::text IS NULL OR provider = %s)
         ORDER BY started_at DESC
-        """, (since_days, indoor_only, pool_length_m, pool_length_m)))
+        """, (since_days, indoor_only, pool_length_m, pool_length_m, provider, provider)))
 
 
 @mcp.tool()
 async def session_detail(workout_id: str, bucket_minutes: int = 5) -> dict:
     """One session's summary plus its within-session shape, bucketed over time.
 
-    Apple Watch does not export per-length splits, so this is the finest
-    structure available: per-minute stroke rate and distance, aggregated into
-    buckets. Falling distance with steady stroke rate suggests fatigue; gaps
-    with near-zero distance are rests and mark set boundaries. Do not present
-    these buckets as if they were 50m splits.
+    Per-minute stroke count, distance and heart rate, aggregated into buckets.
+    Falling distance with steady stroke rate suggests fatigue; gaps with
+    near-zero distance are rests and mark set boundaries. Do not present these
+    buckets as 50m splits — real per-length splits, where they exist, are in
+    `lengths` (Garmin labels each with its stroke style; Apple never did).
     """
     rows = await q("SELECT * FROM workouts WHERE id = %s", (workout_id,))
     if not rows:
         return {"error": "not found"}
     w = rows[0]
     w.pop("raw", None)
+    lengths = await q(
+        "SELECT idx, duration_s, distance_m, stroke_style FROM workout_laps"
+        " WHERE workout_id = %s ORDER BY idx", (workout_id,))
     buckets = await q(
         """
         SELECT to_char(date_trunc('hour', ts)
@@ -368,7 +410,7 @@ async def session_detail(workout_id: str, bucket_minutes: int = 5) -> dict:
         WHERE workout_id = %s AND metric IN ('swimStroke','swimDistance','heartRateData')
         GROUP BY 1 ORDER BY 1
         """, (bucket_minutes, bucket_minutes, workout_id))
-    return {"session": _r([w])[0], "buckets": _r(buckets)}
+    return {"session": _r([w])[0], "buckets": _r(buckets), "lengths": _r(lengths)}
 
 
 @mcp.tool()
@@ -403,7 +445,7 @@ async def compare_blocks(block_days: int = 14) -> dict:
                  CASE WHEN started_at >= now() - make_interval(days => %s)
                       THEN 'current' ELSE 'previous' END AS block
           FROM workouts
-          WHERE sport = 'swim'
+          WHERE sport = 'swim' AND superseded_by IS NULL
             AND started_at >= now() - make_interval(days => %s))
         SELECT block, COUNT(*) AS sessions, SUM(distance_m) AS distance_m,
                SUM(moving_s) AS moving_s, AVG(swolf) AS avg_swolf,
@@ -428,7 +470,7 @@ async def css_inputs() -> dict:
         """
         SELECT started_at::date AS day, distance_m, moving_s, pool_length_m
         FROM workouts
-        WHERE sport = 'swim' AND distance_m BETWEEN 180 AND 420
+        WHERE sport = 'swim' AND superseded_by IS NULL AND distance_m BETWEEN 180 AND 420
         ORDER BY moving_s/NULLIF(distance_m,0) ASC LIMIT 10
         """)
     return {"candidates": _r(rows),
@@ -457,6 +499,40 @@ async def apply_schema() -> None:
     print(f"schema applied from {SCHEMA}", flush=True)
 
 
+async def garmin_loop() -> None:
+    """Pull the last few days from Garmin Connect, forever.
+
+    A failure (expired tokens, a 429, Garmin changing its login again) is
+    logged into ingest_log and retried next round; it never takes the server
+    down — /ingest and the dashboards keep working without Garmin. The client
+    is kept between rounds so tokens are refreshed rather than re-read.
+    """
+    from importers.garmin import client, pull
+    g = None
+    while True:
+        try:
+            if g is None:
+                g = await asyncio.to_thread(client)
+            async with pool.connection() as conn:
+                until = date.today()
+                counts = await pull(conn, until - timedelta(days=GARMIN_LOOKBACK_DAYS),
+                                    until, g)
+            print(f"garmin pull: {counts}", flush=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                                  # noqa: BLE001
+            g = None                                            # re-login next round
+            print(f"garmin pull failed: {type(e).__name__}: {e}", flush=True)
+            try:
+                async with pool.connection() as conn:
+                    await conn.execute(
+                        "INSERT INTO ingest_log (provider, note) VALUES ('garmin_error', %s)",
+                        (f"{type(e).__name__}: {e}"[:500],))
+            except Exception:                                   # noqa: BLE001
+                pass
+        await asyncio.sleep(GARMIN_POLL_MINUTES * 60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool
@@ -467,8 +543,11 @@ async def lifespan(app: FastAPI):
                                check=AsyncConnectionPool.check_connection)
     await pool.open()
     await apply_schema()
+    task = asyncio.create_task(garmin_loop()) if GARMIN_ENABLED else None
     async with mcp_app.lifespan(app):
         yield
+    if task:
+        task.cancel()
     await pool.close()
 
 
@@ -491,6 +570,9 @@ def auth(authorization: str = Header(default="")) -> None:
 
 @app.post("/ingest", dependencies=[Depends(auth)])
 async def ingest(request: Request) -> dict:
+    if not HAE_ENABLED:
+        # 404 rather than 503: HAE should stop retrying, not back off.
+        raise HTTPException(status_code=404, detail="hae ingest disabled")
     body = await request.body()
     try:
         payload = json.loads(body)
@@ -502,18 +584,17 @@ async def ingest(request: Request) -> dict:
 
 @app.get("/health")
 async def health() -> dict:
-    """Target for the Home Assistant REST sensor. Alert when age_hours > 12."""
-    rows = await q("SELECT at, n_metrics, n_workouts FROM ingest_log ORDER BY at DESC LIMIT 1")
-    if not rows:
-        return {"ok": True, "last_ingest": None, "age_hours": 999}
-    last = rows[0]["at"]
-    return {
-        "ok": True,
-        "last_ingest": last.isoformat(),
-        "age_hours": round((datetime.now(last.tzinfo) - last).total_seconds() / 3600, 1),
-        "last_metrics": rows[0]["n_metrics"],
-        "last_workouts": rows[0]["n_workouts"],
-    }
+    """Target for the Home Assistant REST sensor.
+
+    The top-level fields describe the PRIMARY provider (Garmin when enabled),
+    so the existing watchdog keeps working unchanged; `providers` has each one,
+    and `providers.garmin_error` the last failed pull, if any.
+    """
+    f = await freshness()
+    p = f["providers"].get(f["primary"])
+    if not p:
+        return {"ok": True, "last_ingest": None, "age_hours": 999, **f}
+    return {"ok": True, **p, **f}
 
 
 app.mount("/", mcp_app)

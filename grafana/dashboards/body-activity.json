@@ -184,7 +184,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Exercise minutes",
+      "title": "Exercise / intensity minutes",
       "description": "",
       "gridPos": {
         "x": 0,
@@ -200,7 +200,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "\nSELECT time, value AS minutes FROM v_daily_metrics\nWHERE $__timeFilter(time) AND metric = 'exercise_time' ORDER BY 1\n",
+          "rawSql": "\nSELECT time,\n       CASE WHEN metric = 'exercise_time'     THEN value END AS \"exercise (Apple)\",\n       CASE WHEN metric = 'intensity_minutes' THEN value END AS \"intensity (Garmin)\"\nFROM v_daily_metrics\nWHERE $__timeFilter(time) AND metric IN ('exercise_time', 'intensity_minutes') ORDER BY 1\n",
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
