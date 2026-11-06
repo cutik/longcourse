@@ -221,7 +221,9 @@ CREATE TABLE IF NOT EXISTS provider_priority (
     provider TEXT PRIMARY KEY,
     rank     INTEGER NOT NULL           -- 1 wins
 );
-INSERT INTO provider_priority (provider, rank) VALUES ('garmin', 1), ('apple', 2)
+-- 'approx' — race tracks rebuilt from results and course maps
+-- (app/importers/approx.py). Last, so any real recording of the same swim wins.
+INSERT INTO provider_priority (provider, rank) VALUES ('garmin', 1), ('apple', 2), ('approx', 3)
 ON CONFLICT (provider) DO NOTHING;
 
 -- --------------------------------------------------------- metric metadata --
@@ -518,7 +520,10 @@ SELECT w.started_at AS time, w.id,
        w.pace_s_per_100m,
        r.point_count, r.distance_m AS gps_distance_m,
        r.center_lat, r.center_lon, r.min_lat, r.max_lat, r.min_lon, r.max_lon,
-       wt.water_c
+       wt.water_c,
+       -- 'approx' rows are races from before the watch could record them: the
+       -- time and distance are official, the track is drawn from the course map.
+       w.provider, w.name_raw
 FROM workouts w
 LEFT JOIN workout_routes r ON r.workout_id = w.id
 LEFT JOIN LATERAL (

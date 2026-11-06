@@ -1,0 +1,158 @@
+# Open-water races swum before the watch could record them (2019–2021, a
+# Samsung watch whose archive Samsung later deleted). Rebuilt from official
+# results where they exist and from the swimmer's memory where they do not.
+#
+# The TIME and DISTANCE are the race's own (protocol, archived results, medal
+# engraving) — `time_source` says which. The TRACK is an approximation: a line
+# through the course's published landmarks, with fixes spread evenly over the
+# finish time. It is good enough to put the swim on the world map; it says
+# nothing about how the swim was actually paced or steered.
+#
+# Imported by `python -m importers.approx` as provider 'approx'. A real track
+# for the same session (provider apple/garmin) supersedes the approximation.
+#
+# Geometry, one of:
+#   waypoints = [[lat, lon], ...]           a path through these points
+#   start + legs = [[bearing°, metres], …]  dead reckoning from `start`
+#   laps = N                                repeat the waypoints N times (loops)
+#
+# Coordinates: OpenStreetMap (Nominatim) for named places, Google Maps pins
+# from the swimmer for Krabi and Sahl Hasheesh. Verified 2026-11-06.
+
+[[swim]]
+slug = "orta-2019-half"
+name = "Half Oceanman Lago d'Orta"
+date = "2019-06-22"
+start_local = "09:00"
+tz = "Europe/Rome"
+distance_m = 4500
+duration = "2:03:00"
+time_source = "memory"
+result_ref = "no published results survive (oceanman-openwater.com is gone; not in the Wayback Machine)"
+# Traced from the swimmer's own drawing of the course over a map (2026-11-06).
+# Isola San Giulio -> along the east shore -> Lido di Gozzano (Buccione)
+waypoints = [[45.79545, 8.39991], [45.79531, 8.4009], [45.79484, 8.40208], [45.7944, 8.40366], [45.79421, 8.40563], [45.7938, 8.4078], [45.79342, 8.40899], [45.79325, 8.41096], [45.79292, 8.41274], [45.79243, 8.41412], [45.79147, 8.4155], [45.7901, 8.41688], [45.78804, 8.41866], [45.78612, 8.42004], [45.78338, 8.42162], [45.78174, 8.42221], [45.78009, 8.42359], [45.77872, 8.42418], [45.77708, 8.42458], [45.77543, 8.42497], [45.77324, 8.42446], [45.77105, 8.42458], [45.76913, 8.42517], [45.76748, 8.42596], [45.7668, 8.42655], [45.76639, 8.42734], [45.76502, 8.42762]]
+
+[[swim]]
+slug = "dism-2019-cherkasy-5k"
+name = "International Dnipro Swim Marathon, 5 km"
+date = "2019-07-13"
+start_local = "10:30"
+tz = "Europe/Kyiv"
+distance_m = 5000
+duration = "2:53:00"
+time_source = "memory"
+result_ref = "timingevents.com archive starts in 2020; no 2019 protocol found"
+# Traced from the swimmer's own drawing of the course over a map (2026-11-06).
+# Panske, mid-dam -> south-east of the dam, parallel to it -> cafe Bochka beach
+waypoints = [[49.50516, 32.07499], [49.50399, 32.07656], [49.50252, 32.07797], [49.50143, 32.07769], [49.50033, 32.076], [49.49905, 32.07431], [49.49759, 32.07206], [49.49594, 32.06981], [49.49503, 32.06841], [49.49448, 32.067], [49.49338, 32.06475], [49.49247, 32.0625], [49.49173, 32.06082], [49.49009, 32.05744], [49.48844, 32.05463], [49.4868, 32.05238], [49.48533, 32.05126], [49.48369, 32.04957], [49.48186, 32.0476], [49.47985, 32.04592], [49.47802, 32.04395], [49.47637, 32.04198], [49.47509, 32.04057], [49.47345, 32.03917], [49.47235, 32.03748], [49.47107, 32.03551], [49.46961, 32.03411], [49.46814, 32.03355], [49.46686, 32.03371], [49.46595, 32.03467], [49.46522, 32.0358], [49.46405, 32.03709]]
+
+[[swim]]
+slug = "bosphorus-2019"
+name = "Samsung Bosphorus Cross-Continental Swim"
+date = "2019-07-21"
+start_local = "10:00"
+tz = "Europe/Istanbul"
+distance_m = 6500
+duration = "1:19:26"
+time_source = "protocol"
+result_ref = "swum under another entrant's slot: OLEKSANDR ROMAN, bib 1199, 1150th — bogazici-api.olimpiyat.org.tr 2019 general results"
+# Kanlica pier -> mid-strait -> south with the current -> Kurucesme (Cemil Topuzlu park)
+waypoints = [[41.10025, 29.06532], [41.09600, 29.05800], [41.08800, 29.05400], [41.07600, 29.04800], [41.06400, 29.04200], [41.05600, 29.03650], [41.05395, 29.03448]]
+
+[[swim]]
+slug = "independence-2019-zadorozhne"
+name = "Independence Swim, Zadorozhne lake"
+date = "2019-08-17"
+start_local = "10:00"
+tz = "Europe/Kyiv"
+distance_m = 3800
+duration = "1:40:00"
+time_source = "estimate"
+result_ref = "no protocol; time estimated from the 2:37/100m of Legendary Swim Lviv 2021 on the same lake. 3.8 km = two laps (ZAXID, 2019-08-19)"
+laps = 2
+waypoints = [[49.55388, 23.91928], [49.55340, 23.91978], [49.55226, 23.92096], [49.55148, 23.92272], [49.55122, 23.92353], [49.55129, 23.92437], [49.55172, 23.92546], [49.55196, 23.92550], [49.55236, 23.92513], [49.55299, 23.92493], [49.55399, 23.92424], [49.55459, 23.92323], [49.55573, 23.92207], [49.55661, 23.92119], [49.55568, 23.91865], [49.55524, 23.91816], [49.55444, 23.91875], [49.55388, 23.91928]]
+
+[[swim]]
+slug = "krabi-2019-half"
+name = "Half Oceanman Krabi"
+date = "2019-11-03"
+start_local = "06:00"
+tz = "Asia/Bangkok"
+distance_m = 5000
+duration = "2:07:06"
+time_source = "wayback"
+result_ref = "Vitalii Boldin, bib 5097, 171st — web.archive.org/web/20191116075621/http://oceanman-openwater.com:80/wp-content/uploads/Half-oceanman-5Km-Krabi-2019.pdf"
+# Dusit Thani beach, Klong Muang. A long rectangle straight out to sea: ~2.45 km
+# out, a ~75 m shoulder, and back.
+start = [8.051343, 98.755066]
+legs = [[255, 2450], [345, 75], [75, 2450]]
+
+[[swim]]
+slug = "bosphorus-2020"
+name = "Samsung Bosphorus Cross-Continental Swim"
+date = "2020-08-23"
+start_local = "10:00"
+tz = "Europe/Istanbul"
+distance_m = 6500
+duration = "1:07:57"
+time_source = "protocol"
+result_ref = "VITALII BOLDIN, bib 1323, 716th — bogazici-api.olimpiyat.org.tr 2020 general results (race postponed from July by COVID)"
+waypoints = [[41.10025, 29.06532], [41.09600, 29.05800], [41.08800, 29.05400], [41.07600, 29.04800], [41.06400, 29.04200], [41.05600, 29.03650], [41.05395, 29.03448]]
+
+[[swim]]
+slug = "sahl-hasheesh-2020-half"
+name = "Half Oceanman Sahl Hasheesh"
+date = "2020-10-30"
+start_local = "08:30"
+tz = "Africa/Cairo"
+distance_m = 5000
+duration = "2:26:00"
+time_source = "memory"
+result_ref = "no published results survive"
+# Traced from the swimmer's own drawing of the course over a map (2026-11-06).
+# From the beach ~500 m east, turn, a long leg south-west along the shore,
+# turn, and back up the inside to the start.
+waypoints = [[27.04697, 33.89124], [27.04648, 33.89179], [27.0464, 33.89344], [27.04669, 33.89509], [27.04689, 33.8961], [27.04648, 33.89605], [27.04575, 33.89565], [27.04478, 33.895], [27.04396, 33.89482], [27.04299, 33.89427], [27.04201, 33.89344], [27.04104, 33.89252], [27.04006, 33.89179], [27.03892, 33.89087], [27.03827, 33.89032], [27.0373, 33.8894], [27.03616, 33.88858], [27.03502, 33.88821], [27.03405, 33.88793], [27.03275, 33.88793], [27.03161, 33.88821], [27.03031, 33.88858], [27.02901, 33.88863], [27.02868, 33.88808], [27.02909, 33.88757], [27.02949, 33.88701], [27.03031, 33.88628], [27.03145, 33.88582], [27.03275, 33.88573], [27.03502, 33.88573], [27.03632, 33.88564], [27.03795, 33.886], [27.03892, 33.88628], [27.04006, 33.88683], [27.0412, 33.88729], [27.04234, 33.88757], [27.04348, 33.88812], [27.04445, 33.8883], [27.0451, 33.88885], [27.04608, 33.88995], [27.04697, 33.89124]]
+
+[[swim]]
+slug = "legendary-2021-lviv-hero"
+name = "Legendary Swim Lviv, HERO"
+date = "2021-06-12"
+start_local = "10:00"
+tz = "Europe/Kyiv"
+distance_m = 4000
+duration = "1:44:20"
+time_source = "protocol"
+result_ref = "Boldin Vitaliy, Odynokov Team, bib 21, 51st men — legendaryswim.com/en/result/17"
+laps = 2
+waypoints = [[49.55388, 23.91928], [49.55340, 23.91978], [49.55226, 23.92096], [49.55148, 23.92272], [49.55122, 23.92353], [49.55129, 23.92437], [49.55172, 23.92546], [49.55196, 23.92550], [49.55236, 23.92513], [49.55299, 23.92493], [49.55399, 23.92424], [49.55459, 23.92323], [49.55573, 23.92207], [49.55661, 23.92119], [49.55568, 23.91865], [49.55524, 23.91816], [49.55444, 23.91875], [49.55388, 23.91928]]
+
+[[swim]]
+slug = "alanya-2021-half"
+name = "Half Oceanman Alanya"
+date = "2021-10-16"
+start_local = "09:00"
+tz = "Europe/Istanbul"
+distance_m = 5000
+duration = "2:15:20"
+time_source = "protocol"
+result_ref = "VITALII BOLDIN, bib 641, 132nd men — departiming.com/attachments/376/OCEANMAN_5K_-_Overall.pdf"
+# Traced from the swimmer's own drawing of the course over a map (2026-11-06).
+# Triangle: start/finish on the beach, first turn at the corner of the castle
+# rock, second turn opposite in open water, back to the beach.
+waypoints = [[36.54256, 32.00469], [36.54182, 32.00483], [36.54103, 32.00518], [36.53967, 32.00522], [36.53887, 32.00504], [36.53808, 32.00469], [36.53751, 32.00426], [36.53661, 32.00391], [36.53593, 32.00363], [36.53514, 32.00335], [36.53446, 32.00307], [36.53355, 32.00272], [36.53276, 32.00236], [36.53219, 32.00201], [36.53162, 32.00145], [36.53083, 32.00088], [36.53038, 32.0006], [36.5297, 32.00058], [36.52936, 32.00088], [36.52913, 32.00187], [36.52924, 32.00257], [36.5297, 32.00356], [36.52981, 32.0044], [36.52998, 32.00497], [36.53026, 32.00638], [36.5306, 32.00736], [36.531, 32.00835], [36.5314, 32.00933], [36.53174, 32.01046], [36.53208, 32.01158], [36.53253, 32.01299], [36.53315, 32.0144], [36.53389, 32.01567], [36.53434, 32.01651], [36.53491, 32.01665], [36.53525, 32.01651], [36.53593, 32.01595], [36.5365, 32.01567], [36.53706, 32.01496], [36.53729, 32.01426], [36.53774, 32.01313], [36.53808, 32.01229], [36.53865, 32.01158], [36.53876, 32.01102], [36.5391, 32.01046], [36.53955, 32.00961], [36.54001, 32.00877], [36.54063, 32.00764], [36.54103, 32.00694], [36.54165, 32.00595], [36.54233, 32.00511], [36.54256, 32.00469]]
+
+[[swim]]
+slug = "desna-6-5-2021"
+name = "Desna 6.5 — from village to village"
+date = "2021-06-06"
+start_local = "10:00"
+tz = "Europe/Kyiv"
+distance_m = 6500
+duration = "1:23:00"
+time_source = "medal"
+result_ref = "time engraved on the finisher medal; organiser site desna6500.com is gone and its 2021 results page kept no table. Route: Rozhny rescue station 'Desna' -> Pukhivka beach, downstream (brovary.net.ua)"
+# The last 6.5 km of the Desna's OpenStreetMap channel before Pukhivka beach,
+# walked upstream from the finish — the rescue station's exact spot is unknown.
+waypoints = [[50.64579, 30.71228], [50.64339, 30.71256], [50.64173, 30.71256], [50.63995, 30.71239], [50.63828, 30.71121], [50.63662, 30.70726], [50.63521, 30.70309], [50.63406, 30.69877], [50.63257, 30.69403], [50.63149, 30.69104], [50.62968, 30.68795], [50.62801, 30.68619], [50.62642, 30.68458], [50.62426, 30.68344], [50.62208, 30.68368], [50.62029, 30.68559], [50.61948, 30.68922], [50.61939, 30.69434], [50.61921, 30.69713], [50.61882, 30.69983], [50.61821, 30.70185], [50.61744, 30.70370], [50.61574, 30.70548], [50.61342, 30.70606], [50.61132, 30.70581], [50.60949, 30.70433], [50.60794, 30.70131]]
