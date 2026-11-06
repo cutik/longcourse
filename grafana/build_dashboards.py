@@ -350,7 +350,7 @@ ORDER BY time DESC
                    "lost signal underwater. 'approximate' tracks are 2019-2021 races "
                    "swum before a watch recorded them: official time and distance, "
                    "route drawn from the course map (app/importers/approx_swims.toml)."),
-    ], from_="2023-01-01")
+    ], from_="2019-01-01")
 
 # --------------------------------------------------------- training load ---
 load = dashboard(

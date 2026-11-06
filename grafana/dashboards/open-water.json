@@ -10,7 +10,7 @@
   "refresh": "30m",
   "editable": true,
   "time": {
-    "from": "2023-01-01",
+    "from": "2019-01-01",
     "to": "now"
   },
   "templating": {
