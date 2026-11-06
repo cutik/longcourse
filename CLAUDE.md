@@ -276,6 +276,16 @@ deleting:
   overwrote the Garmin row with poorer data.
 - Switching watches back is a `provider_priority` update; see `docs/garmin.md`.
 
+A third provider, **`approx`**, holds 2019–2021 races swum before any watch
+recorded them (the Samsung era). `app/importers/approx_swims.toml` lists each
+race with its official time and distance and the source of both (protocol,
+Wayback Machine, medal engraving, or the swimmer's memory). The **track** is
+drawn from the course's landmarks and spread evenly over the finish time, so it
+belongs on the map and in yearly volume, never in pacing analysis. Ranked last
+in `provider_priority`, so a real recording of the same swim supersedes it.
+`derive` re-derives pool swims only; it used to null the moving time of every
+open-water swim, these included.
+
 ## Development workflow
 
 **Supervisor caches images by version tag.** Editing code and hitting Rebuild

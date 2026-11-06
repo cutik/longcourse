@@ -34,7 +34,10 @@ from datetime import datetime, timedelta
 
 from parse import parse_dt
 
-RANK = {None: 0, "nearby": 1, "push": 2, "gps": 3, "device": 4, "healthkit": 5}
+# manual: set by hand where the place is certain — the approximated race tracks
+# (importers/approx.py) know their venue exactly. Nothing inferred replaces it.
+RANK = {None: 0, "nearby": 1, "push": 2, "gps": 3, "device": 4, "healthkit": 5,
+        "manual": 6}
 PUSH_WINDOW = timedelta(hours=6)
 NEARBY_WINDOW = timedelta(hours=12)
 

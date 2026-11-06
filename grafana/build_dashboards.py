@@ -334,7 +334,10 @@ WHERE $__timeFilter(time) AND pace_s_per_100m IS NOT NULL ORDER BY 1
                   "lineWidth": 2}}, "overrides": []}}),
 
         panel("table", "Open-water swims", """
-SELECT time AS "date", ROUND(distance_m) AS "m",
+SELECT time AS "date",
+       CASE WHEN provider = 'approx' THEN name_raw END AS "race",
+       CASE WHEN provider = 'approx' THEN 'approximate' ELSE 'recorded' END AS "track",
+       ROUND(distance_m) AS "m",
        ROUND(gps_distance_m) AS "gps m", ROUND(duration_s/60) AS "min",
        ROUND(pace_s_per_100m::numeric) AS "s/100m",
        ROUND(water_c::numeric, 1) AS "water °C", point_count AS "gps pts",
@@ -344,7 +347,9 @@ WHERE $__timeFilter(time)
 ORDER BY time DESC
 """, 0, 26, 24, 10, fmt="table",
               desc="GPS distance is the track length; the two disagree when the watch "
-                   "lost signal underwater."),
+                   "lost signal underwater. 'approximate' tracks are 2019-2021 races "
+                   "swum before a watch recorded them: official time and distance, "
+                   "route drawn from the course map (app/importers/approx_swims.toml)."),
     ], from_="2023-01-01")
 
 # --------------------------------------------------------- training load ---

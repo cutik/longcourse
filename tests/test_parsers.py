@@ -383,6 +383,38 @@ check("sleep levels: light -> core, 0 -> deep, plus in-bed",
       [r[3] for r in sl], ["inbed", "core", "deep"])
 check("night filed on the wake-up day", {r[5] for r in sl}, {datetime(2026, 11, 4).date()})
 
+# ------------------------------------------------------- approximate tracks --
+print("\napproximate race tracks")
+from importers.approx import (COLS as APPROX_COLS, destination, geometry, length_m,
+                              load as load_approx, track as approx_track,
+                              workout_row as approx_row)
+from importers.routes import haversine
+
+p = destination(8.0, 98.0, 90, 1000)
+check("dead reckoning: 1 km east is 1 km away", haversine((8.0, 98.0), p), 1000.0, tol=0.5)
+check("dead reckoning: due east keeps latitude", p[0], 8.0, tol=1e-4)
+tri = {"start": [27.0, 33.9], "legs": [[90, 500], [215, 2500]], "close": True}
+g = geometry(tri)
+check("closed course returns to the start", g[-1], g[0])
+loop = {"waypoints": [[0.0, 0.0], [0.0, 0.01], [0.01, 0.01], [0.0, 0.0]], "laps": 2}
+check("two laps double the path, start point not repeated mid-way",
+      length_m(geometry(loop)), 2 * length_m(geometry({**loop, "laps": 1})), tol=0.01)
+
+races = load_approx()
+check("every race in the data file has a time and a source",
+      all(r.get("duration") and r.get("time_source") and r.get("result_ref") for r in races), True)
+b19 = next(r for r in races if r["slug"] == "bosphorus-2019")
+t = approx_track(b19)
+check("track ends exactly at the official finish time",
+      (t[-1][0] - t[0][0]).total_seconds(), 1 * 3600 + 19 * 60 + 26, tol=0.001)
+check("track starts at the scheduled local hour", t[0][0].hour, 10)
+R = dict(zip(APPROX_COLS, approx_row(b19, "Europe/Kyiv")))
+check("approx row: official distance, not the drawn one", R["distance_m"], 6500.0)
+check("approx row: venue zone set by hand", (R["tz_name"], R["tz_source"]),
+      ("Europe/Istanbul", "manual"))
+check("approx row: Kyiv calendar day for the dashboards",
+      R["local_day"], datetime(2019, 7, 21).date())
+
 # --------------------------------------------------------------------------
 print()
 if failures:

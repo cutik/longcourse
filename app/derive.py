@@ -119,7 +119,11 @@ async def rederive_workouts(conn, since: datetime | None) -> dict:
             SELECT workout_id, COUNT(*) AS lap_count, SUM(duration_s) AS lap_total_s
             FROM workout_laps GROUP BY workout_id
         ) l ON l.workout_id = w.id
-        WHERE w.sport = 'swim'
+        -- Pool swims only. Open water has no lengths, so derive_swim has nothing
+        -- to measure and returns NULLs — which used to overwrite the moving time
+        -- and pace that a Garmin open-water swim (GPS) or an approximated race
+        -- (official time) carry from import.
+        WHERE w.sport = 'swim' AND w.is_indoor IS NOT FALSE
           AND (%s::timestamptz IS NULL OR w.started_at >= %s)
         ORDER BY w.started_at
         """, (since, since))
